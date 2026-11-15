@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DAG Editor — Demo</title>
+<link rel="stylesheet" href="dag-editor.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #080b12; color: #c8d0f0; height: 100vh; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr 280px; grid-template-areas: "header header" "canvas sidebar" "footer footer"; }
+header { grid-area: header; padding: 14px 20px; background: #0d1120; border-bottom: 1px solid #1e2538; display: flex; align-items: baseline; gap: 16px; }
+header h1 { font-size: 15px; font-weight: 600; color: #e8ecff; letter-spacing: .02em; }
+header p  { font-size: 12px; color: #4a5580; }
+#canvas-container { grid-area: canvas; overflow: hidden; }
+aside { grid-area: sidebar; background: #0d1120; border-left: 1px solid #1e2538; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: uppercase; letter-spacing: .08em; }
+#event-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; min-height: 60px; }
+.log-entry { font-size: 11px; padding: 6px 8px; border-radius: 5px; background: #131929; border-left: 3px solid; line-height: 1.4; animation: fadeIn .2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+.log-entry.created       { border-color: #2ecc71; color: #7fffc4; }
+.log-entry.selected      { border-color: #4a7cff; color: #a0c0ff; }
+.log-entry.deleted       { border-color: #e74c3c; color: #ff9090; }
+.log-entry.edge-created  { border-color: #a0e080; color: #c8f0a8; }
+.log-entry.edge-deleted  { border-color: #e09040; color: #f0c888; }
+.log-label { display: inline-block; font-weight: 700; margin-right: 4px; text-transform: uppercase; font-size: 9px; letter-spacing: .08em; opacity: .8; }
+#shortcuts { font-size: 11px; color: #4a5580; line-height: 2; }
+#shortcuts kbd { background: #1e2538; border: 1px solid #3a4466; border-radius: 3px; padding: 1px 5px; font-size: 10px; color: #8899cc; font-family: inherit; }
+.demo-btn { background: #1e2538; border: 1px solid #3a4466; color: #8899cc; border-radius: 6px; padding: 7px 12px; font-size: 12px; cursor: pointer; transition: background .15s; width: 100%; }
+.demo-btn:hover { background: #252c42; color: #c8d0f0; }
+#json-out { width: 100%; height: 110px; resize: vertical; background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; color: #7fffc4; font-family: monospace; font-size: 10px; padding: 6px; box-sizing: border-box; }
+footer { grid-area: footer; padding: 8px 20px; background: #0d1120; border-top: 1px solid #1e2538; font-size: 11px; color: #2a3458; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DAG Editor</h1>
+  <p>Standalone directed-acyclic-graph editor · dag-editor.js</p>
+</header>
+<div id="canvas-container"></div>
+<aside>
+  <div><h2>Events</h2></div>
+  <div id="event-log">
+    <div class="log-entry selected" style="border-color:#2a3458;color:#4a5580">
+      <span class="log-label">—</span>Events will appear here
+    </div>
+  </div>
+  <div>
+    <h2 style="margin-bottom:8px">Import / Export</h2>
+    <textarea id="json-out" spellcheck="false" placeholder="JSON appears here after export…"></textarea>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="demo-btn" id="export-btn" style="flex:1">Export JSON</button>
+      <button class="demo-btn" id="import-btn" style="flex:1">Import JSON</button>
+    </div>
+  </div>
+  <div>
+    <h2 style="margin-bottom:8px">Keyboard shortcuts</h2>
+    <div id="shortcuts">
+      <kbd>Click</kbd> canvas → add node<br>
+      Drag output port → edge forward<br>
+      Drag input port → edge backward<br>
+      Drop on canvas → new node<br>
+      <kbd>Dbl-click</kbd> edge → insert node<br>
+      <kbd>Dbl-click</kbd> node → rename<br>
+      <kbd>Del</kbd> / <kbd>Backspace</kbd> → delete<br>
+      <kbd>Enter</kbd> → rename selected<br>
+      <kbd>N</kbd> → new node at centre<br>
+      <kbd>Tab</kbd> → cycle selection<br>
+      <kbd>Esc</kbd> → deselect<br>
+      <kbd>L</kbd> → one-shot auto-layout<br>
+      <kbd>Shift</kbd>+<kbd>L</kbd> → pin auto-layout<br>
+      Dbl-click Layout btn → pin<br>
+      <kbd>Ctrl</kbd>+<kbd>Z</kbd> → undo<br>
+      <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> → redo<br>
+      <kbd>Scroll</kbd> → zoom<br>
+      <kbd>Alt</kbd>+drag → pan
+    </div>
+  </div>
+  <button class="demo-btn" id="sample-btn">Load sample graph</button>
+</aside>
+<footer>dag-editor.js — DAGNode / DAGEdge, multi-port nodes, compact layout, JSON import/export</footer>
+<script src="dag-editor.js"></script>
+<script>
+  const container = document.getElementById('canvas-container');
+  const log       = document.getElementById('event-log');
+  const jsonOut   = document.getElementById('json-out');
+  const MAX_LOG   = 40;
+
+  function addLog(event) {
+    const e = document.createElement('div');
+    e.className = `log-entry ${event.type}`;
+    const labels = {
+      created:        '＋ Node created',
+      selected:       '◎ Node selected',
+      deleted:        '✕ Node deleted',
+      'edge-created': '→ Edge created',
+      'edge-deleted': '✕ Edge deleted',
+    };
+    let detail = '';
+    if (event.node) {
+      detail = `${event.node.label} <span style="opacity:.4;font-size:10px">(${event.node.id})</span>`;
+    } else if (event.edge) {
+      detail = `<span style="opacity:.4;font-size:10px">${event.edge.fromNodeId}.${event.edge.fromPortId} → ${event.edge.toNodeId}.${event.edge.toPortId}</span>`;
+    }
+    e.innerHTML = `<span class="log-label">${labels[event.type] || event.type}</span>${detail}`;
+    log.prepend(e);
+    while (log.children.length > MAX_LOG) log.lastChild.remove();
+  }
+
+  const editor = new DAGEditor(container, addLog);
+
+  document.getElementById('export-btn').addEventListener('click', () => {
+    jsonOut.value = editor.exportJSON(2); jsonOut.select();
+  });
+  document.getElementById('import-btn').addEventListener('click', () => {
+    const src = jsonOut.value.trim(); if (!src) return;
+    try { editor.importJSON(src); log.innerHTML = ''; }
+    catch (err) { alert('Import failed: ' + err.message); }
+  });
+
+  document.getElementById('sample-btn').addEventListener('click', () => {
+    editor.loadGraph({
+      version: 2,
+      nodes: [
+        { id: 'n1', label: 'Source',     x: 40,  y: 100,
+           inputs: [], outputs: [{ id: 'data', label: 'data' }] },
+        { id: 'n2', label: 'Parse',      x: 240, y: 40,
+           inputs:  [{ id: 'raw',    label: 'raw'    }],
+           outputs: [{ id: 'tokens', label: 'tokens' }] },
+        { id: 'n3', label: 'Validate',   x: 240, y: 160,
+           inputs:  [{ id: 'raw',    label: 'raw'    }],
+           outputs: [{ id: 'ok',     label: 'ok'     },
+                     { id: 'errors', label: 'errors' }] },
+        { id: 'n4', label: 'Transform',  x: 460, y: 40,
+           inputs:  [{ id: 'tokens', label: 'tokens' }],
+           outputs: [{ id: 'out',    label: 'out'    }] },
+        { id: 'n5', label: 'Log errors', x: 460, y: 240,
+           inputs:  [{ id: 'errors', label: 'errors' }],
+           outputs: [] },
+        { id: 'n6', label: 'Merge',      x: 660, y: 90,
+           inputs:  [{ id: 'a',   label: 'a'   },
+                     { id: 'ok',  label: 'ok'  }],
+           outputs: [{ id: 'out', label: 'out' }] },
+        { id: 'n7', label: 'Output',     x: 860, y: 100,
+           inputs:  [{ id: 'in', label: 'in' }],
+           outputs: [] },
+      ],
+      edges: [
+        { id: 'e1', fromNodeId: 'n1', fromPortId: 'data',   toNodeId: 'n2', toPortId: 'raw'    },
+        { id: 'e2', fromNodeId: 'n1', fromPortId: 'data',   toNodeId: 'n3', toPortId: 'raw'    },
+        { id: 'e3', fromNodeId: 'n2', fromPortId: 'tokens', toNodeId: 'n4', toPortId: 'tokens' },
+        { id: 'e4', fromNodeId: 'n3', fromPortId: 'ok',     toNodeId: 'n6', toPortId: 'ok'     },
+        { id: 'e5', fromNodeId: 'n3', fromPortId: 'errors', toNodeId: 'n5', toPortId: 'errors' },
+        { id: 'e6', fromNodeId: 'n4', fromPortId: 'out',    toNodeId: 'n6', toPortId: 'a'      },
+        { id: 'e7', fromNodeId: 'n6', fromPortId: 'out',    toNodeId: 'n7', toPortId: 'in'     },
+      ],
+    });
+    log.innerHTML = '';
+  });
+</script>
+</body>
+</html>

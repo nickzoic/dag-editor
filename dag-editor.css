@@ -1,0 +1,274 @@
+/*
+ * dag-editor.css — Stylesheet for DAGEditor
+ * Include this alongside dag-editor.js:
+ *   <link rel="stylesheet" href="dag-editor.css">
+ *   <script src="dag-editor.js"></script>
+ */
+
+:root {
+  --dag-bg:         #0f1117;
+  --dag-toolbar-bg: #181c27;
+  --dag-node-fill:  #1e2538;
+  --dag-node-stroke:#3a4466;
+  --dag-node-sel:   #4a7cff;
+  --dag-node-text:  #c8d0f0;
+  --dag-edge:       #3a4466;
+  --dag-accent:     #4a7cff;
+  --dag-draft:      #ff9f4a;
+  --dag-port:       #4a7cff;
+  --dag-hint:       #4a5580;
+  --dag-btn-bg:     #252c42;
+  --dag-btn-hover:  #2f3853;
+  --dag-btn-text:   #8899cc;
+}
+
+.dag-toolbar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 42px;
+  background: var(--dag-toolbar-bg);
+  border-bottom: 1px solid #232940;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  z-index: 10;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.dag-brand {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: var(--dag-node-sel);
+  text-transform: uppercase;
+  margin-right: 8px;
+  opacity: .9;
+}
+
+.dag-toolbar-actions {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.dag-toolbar button {
+  background: var(--dag-btn-bg);
+  color: var(--dag-btn-text);
+  border: 1px solid #2a3150;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  font-family: inherit;
+}
+
+.dag-toolbar button:hover {
+  background: var(--dag-btn-hover);
+  color: #c8d0f0;
+}
+
+.dag-svg {
+  position: absolute;
+  top: 42px; left: 0; right: 0; bottom: 24px;
+  width: 100%;
+  height: calc(100% - 66px);
+  background: var(--dag-bg);
+  background-image:
+    radial-gradient(circle, #232940 1px, transparent 1px);
+  background-size: 28px 28px;
+  display: block;
+  cursor: default;
+}
+
+.dag-hint {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 24px;
+  line-height: 24px;
+  padding: 0 12px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  color: var(--dag-hint);
+  background: var(--dag-toolbar-bg);
+  border-top: 1px solid #232940;
+  pointer-events: none;
+}
+
+/* Nodes */
+.dag-node-bg {
+  fill:         var(--dag-node-fill);
+  stroke:       var(--dag-node-stroke);
+  stroke-width: 1.5;
+  transition:   fill .15s, stroke .15s, filter .15s;
+}
+
+.dag-node-label {
+  fill:          var(--dag-node-text);
+  font-family:   system-ui, -apple-system, sans-serif;
+  font-size:     13px;
+  font-weight:   600;
+  pointer-events: none;
+  transition:    fill .15s;
+}
+
+.dag-node-divider {
+  stroke:        var(--dag-node-stroke);
+  stroke-width:  1;
+  pointer-events: none;
+  transition:    stroke .15s;
+}
+
+.dag-port-label {
+  fill:          var(--dag-node-text);
+  font-family:   system-ui, -apple-system, sans-serif;
+  font-size:     10px;
+  opacity:       0.7;
+  pointer-events: none;
+}
+
+/* Hover: brighter outline, ports emerge */
+.dag-node:hover .dag-node-bg {
+  stroke: #6a8aee;
+  filter: drop-shadow(0 0 6px rgba(106,138,238,.25));
+}
+
+.dag-node:hover .dag-node-divider {
+  stroke: #6a8aee;
+}
+
+/* Selected node hovered: keep teal border */
+.dag-node--selected:hover .dag-node-bg {
+  fill:   #0e2a2a;
+  stroke: #2ee8c0;
+  filter: drop-shadow(0 0 10px rgba(46,232,192,.40));
+}
+
+/* Selected: distinct teal fill */
+.dag-node--selected .dag-node-bg {
+  fill:         #0e2a2a;
+  stroke:       #2ee8c0;
+  stroke-width: 2px;
+  filter:       drop-shadow(0 0 10px rgba(46,232,192,.30));
+}
+
+.dag-node--selected .dag-node-label {
+  fill: #c0fff2;
+}
+
+.dag-node--selected .dag-node-divider {
+  stroke: #2ee8c0;
+  opacity: 0.4;
+}
+
+/* Ports — always show a dim border; brighten on hover */
+.dag-port {
+  fill:         var(--dag-node-fill);
+  stroke:       #2a3458;
+  stroke-width: 2;
+  transition:   fill .15s, stroke .15s;
+  cursor:       crosshair;
+}
+
+/* Brighter ring on node hover */
+.dag-node:hover .dag-port {
+  stroke: var(--dag-port);
+}
+
+/* Fill port solid when hovering the port dot itself */
+.dag-node:hover .dag-port:hover {
+  fill:   var(--dag-port);
+  stroke: var(--dag-port);
+}
+
+/* Selected node: ports match the teal border */
+.dag-node--selected .dag-port {
+  stroke: #2ee8c0;
+}
+
+.dag-node--selected .dag-port:hover {
+  fill:   #2ee8c0;
+  stroke: #2ee8c0;
+}
+
+/* Drop-target highlight: port that a draft edge can connect to */
+.dag-port--target {
+  fill:   var(--dag-draft) !important;
+  stroke: var(--dag-draft) !important;
+  filter: drop-shadow(0 0 6px rgba(255,159,74,.7));
+}
+
+/* Edges */
+.dag-edge {
+  stroke: var(--dag-edge);
+  stroke-width: 2;
+  cursor: pointer;
+  transition: stroke .12s;
+}
+
+.dag-edge:hover {
+  stroke: #5a6a99;
+}
+
+.dag-edge--selected:hover {
+  stroke: #2ee8c0;
+  filter: drop-shadow(0 0 8px rgba(46,232,192,.65));
+}
+
+.dag-edge--selected {
+  stroke: #2ee8c0;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 6px rgba(46,232,192,.5));
+}
+
+.dag-edge-draft {
+  stroke: var(--dag-draft);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+  marker-end: url(#dag-arrow-draft);
+}
+
+/* Layout button: one-shot active */
+.dag-btn-layout--on {
+  background: #1a3060 !important;
+  color: #7aadff !important;
+  border-color: #4a7cff !important;
+  box-shadow: 0 0 8px rgba(74,124,255,.3);
+  animation: dag-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dag-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(74,124,255,.3); }
+  50%       { box-shadow: 0 0 14px rgba(74,124,255,.6); }
+}
+
+/* Layout button: pinned mode (double-click) — teal to distinguish from one-shot */
+.dag-btn-layout--pinned {
+  background: #0e2a2a !important;
+  color: #2ee8c0 !important;
+  border-color: #2ee8c0 !important;
+  animation: dag-pulse-pinned 1.8s ease-in-out infinite;
+}
+
+@keyframes dag-pulse-pinned {
+  0%, 100% { box-shadow: 0 0 6px rgba(46,232,192,.3); }
+  50%       { box-shadow: 0 0 16px rgba(46,232,192,.65); }
+}
+
+/* Rename input */
+.dag-rename-input {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 0 10px;
+  background: #12192e;
+  border: 2px solid var(--dag-node-sel);
+  border-radius: 10px;
+  color: #e8ecff;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+  z-index: 20;
+}
