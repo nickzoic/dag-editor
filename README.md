@@ -1,5 +1,7 @@
 # DAGEditor
 
+![The DAGEditor demo: a 12-node sample graph laid out automatically, with the Enrich node selected and its label and ports shown in the node editor below](screenshot.png)
+
 A standalone, zero-dependency interactive editor for directed acyclic graphs. Drop it into any page — no build step, no npm, no frameworks.
 
 ## Files
@@ -9,6 +11,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 | `dag-editor.js` | All logic — `DAGNode`, `DAGEdge`, `DAGEditor` classes |
 | `dag-editor.css` | All styles and design tokens |
 | `dag-editor-demo.html` | Working demo (requires the two files above in the same directory) |
+| `screenshot.png` | The screenshot at the top of this page |
 
 ## Quick Start
 
@@ -28,7 +31,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 </script>
 ```
 
-Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example: the graph editor fills the page height, with a **node editor pane** below it (edit the selected node's label and add, remove and label its ports), plus a sample pipeline graph, event log, and JSON import/export.
+Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example. It opens with a 12-node sample graph — chosen to show nodes with no, one and several inputs and outputs, compact and expanded nodes, and labelled and unlabelled ports — which is laid out automatically once it has loaded. The graph editor fills the page height, with a **node editor pane** below it (edit the selected node's label and add, remove and label its ports), plus an event log and JSON import/export.
 
 ---
 
@@ -36,7 +39,7 @@ Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.c
 
 Each node has zero or more named **input ports** (left side) and zero or more named **output ports** (right side). Ports have an `id` and an optional `label`.
 
-A node renders in a **compact** layout — no header, label centred, ports stacked down the sides — if it has at most one input and one output, **or** if every port label on both sides is empty or a single character (so a node can have many short-labelled ports and stay compact). Otherwise it **expands**: the label gets its own header above a divider, and each port shows its full label inside the body.
+A node renders in a **compact** layout — no header, label centred, ports stacked down the sides — as long as none of its port labels is longer than one user-perceived character. Characters are counted with `Intl.Segmenter`, so `x̅` (an `x` plus a combining overline), an accented letter written with a combining accent, a flag or a ZWJ emoji sequence each count as one. Any number of unlabelled or one-character-labelled ports stays compact. If any port label is longer, the node **expands**: the label gets its own header above a divider, and each port shows its full label inside the body. (The node's own label is not counted; it wraps instead.)
 
 Long node labels wrap onto several lines (words wider than a line are broken), and the node grows taller to fit.
 
@@ -96,7 +99,7 @@ editor.removePort('n3', 'output', port.id);   // also removes every edge attache
 
 ## Auto-Layout
 
-Click **⟳ Layout** (or press `L`) for a one-shot animated layout that sorts nodes left-to-right by their depth in the graph, spaces them vertically to minimise edge crossings, and fits the result to the window.
+Click **⟳ Layout** (or press `L`) for a one-shot animated layout. Nodes are arranged in columns left to right by their depth in the graph, ordered within each column to reduce edge crossings, and positioned so connected ports line up. Nodes never overlap, and long edges are given their own lane between nodes where they can. The nodes glide into place (about half a second) while the view stays fitted to the window. The result is deterministic: the same graph and arrangement always lay out the same way.
 
 **Double-click** the Layout button (or press `Shift+L`) to **pin** auto-layout: the graph will re-layout automatically whenever edges are added or removed. The button pulses teal while pinned.
 

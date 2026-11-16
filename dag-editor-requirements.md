@@ -11,7 +11,8 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - Each node has a unique string ID, a display label, a position (x, y), and zero or more named input ports and zero or more named output ports.
 - Each port has a unique-within-node ID and an optional display label.
 - Node labels must be unique across all nodes. When a node is created without an explicit label, generate a name that does not already exist in the graph (e.g. "Node", "Node 2", "Node 3", …). Labels the user later types in are not forced to be unique.
-- A node is **compact** if it has at most one input port and at most one output port, **or** if every port on both sides has a label of length 0 or 1. Any other node is **expanded**. A node can therefore have any number of ports on a side and stay compact, provided all its port labels are that short.
+- A node is **expanded** if any of its port labels is longer than one user-perceived character; otherwise it is **compact**. A node can therefore have any number of ports on a side and stay compact, provided every port label is empty or a single character. Only port labels count — the node's own label never affects compactness.
+- User-perceived characters are grapheme clusters, counted with `Intl.Segmenter` (grapheme granularity), so for example `x̅` (x + combining overline), `é` written as `e` + combining accent, a flag, a skin-toned emoji and a ZWJ emoji sequence each count as one character. Where `Intl.Segmenter` is unavailable the editor must still work, using an approximation that folds combining marks, variation selectors, skin tones, ZWJ sequences and flag pairs into one character.
 
 ### 1.2 Edges
 
@@ -36,7 +37,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 ### 2.2 Nodes
 
 - Nodes are rounded rectangles. Output ports are on the right edge; input ports are on the left edge.
-- **Compact nodes** (see §1.1): there is no header or divider. The label is vertically centred. The ports on each side form a stack, evenly spaced and centred on the node (a lone port sits at the vertical midpoint). The node is tall enough to hold its tallest stack. Port labels are shown next to the port dot when non-empty (at most one character, except on nodes with a single port per side, which may have longer labels).
+- **Compact nodes** (see §1.1): there is no header or divider. The label is vertically centred. The ports on each side form a stack, evenly spaced and centred on the node (a lone port sits at the vertical midpoint). The node is tall enough to hold its tallest stack. Port labels (always at most one user-perceived character) are shown next to the port dot when non-empty.
 - **Expanded nodes**: the label sits at the top with a horizontal divider below it. Ports are evenly spaced below the divider, and each port has its label shown inside the node body next to the dot.
 - **Label wrapping** (both layouts): a long node label wraps onto several lines at word boundaries, and a single word wider than a line is broken across lines. Labels are never truncated. The node grows taller to fit every line — in a compact node the label block stays centred, in an expanded node the header, divider and ports move down. Runs of whitespace in a label collapse when displayed.
 - Node height, port positions, hit-testing and edge endpoints always follow the node's actual height.
@@ -135,24 +136,24 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 ### 5.1 Behaviour
 
-- Auto-layout animates node positions in real time — nodes visibly move as the simulation runs.
+- Auto-layout animates node positions in real time: each node glides smoothly from where it is to its new position.
 - During layout, the view is continuously fitted to show the full graph.
-- After the simulation ends, the final positions are saved as an undo step.
+- After the layout ends, the final positions are saved as an undo step.
+- Layout is deterministic: the same graph in the same arrangement always produces the same result. Laying out a large graph must not freeze the page, so the effort spent on ordering and refinement is reduced as the graph grows (small graphs get the full effort).
 
 ### 5.2 Layout Rules
 
-- Nodes are sorted into **strata** (columns) by their longest-path depth from any root (stratum 0 = roots). Each stratum occupies a distinct horizontal band. Roots are on the left, leaves on the right.
-- Within each stratum, nodes are sorted vertically to minimise edge crossings (barycentric heuristic: sort by mean Y of neighbours in adjacent strata).
-- Within each stratum, nodes are evenly spaced vertically, with a gap that allows for the tallest node in that stratum, so nodes made tall by wrapped labels or many ports do not overlap.
-- Nodes avoid overlapping edges that pass through them. If overlap is unavoidable, edges are drawn on top of nodes so they remain visible.
-- Edges tend toward horizontal alignment (connected nodes are gently pulled toward the same Y).
-- Cross-stratum nodes repel each other to avoid column overlap.
+- Nodes are sorted into **strata** (columns) by their longest-path depth from any root (stratum 0 = roots). Every node in a stratum has the same x, and strata are a fixed distance apart. Roots are on the left, leaves on the right, and every edge points left to right.
+- Within each stratum, nodes are ordered vertically to minimise edge crossings. Edges are considered port by port, so the order of a node's ports counts too.
+- **Nodes never overlap.** Within a stratum there is always a minimum gap between nodes, measured from each node's actual height, so nodes made tall by wrapped labels or many ports are accommodated.
+- Connected ports are lined up horizontally where possible (edges tend toward horizontal), subject to the minimum gap.
+- An edge that spans more than one column should not cut through nodes in the columns it crosses: space is reserved for it between nodes, sized to how far the curve sweeps vertically across that column. Where this cannot be achieved, edges are drawn over nodes so they remain visible (§2.3).
+- The layout is anchored so its topmost node is at y = 0, so repeated layouts do not drift.
+- A graph with no nodes, or a single node, lays out without error.
 
 ### 5.3 Stopping Conditions
 
-The simulation stops when either:
-- Total node movement falls below a threshold (converged), or
-- A fixed time deadline is reached (1500 ms).
+Nodes glide toward their positions with a short time constant. The run ends when every node is within 0.5 px of its position (typically well under a second), or at a fixed deadline of 1500 ms at the latest. Either way, nodes finish exactly on their positions.
 
 ### 5.4 Layout Modes
 
@@ -315,3 +316,18 @@ The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as 
 ### 12.3 Event Log
 
 - Logs every `onChange` event, including `deselected` and `updated`. User-supplied labels are shown as plain text, never interpreted as HTML.
+
+### 12.4 Default Sample Graph
+
+- The demo opens with a sample graph already loaded. Once all its nodes and edges are configured it runs auto-layout once. The event log starts empty, and no node is selected.
+- The **Load sample graph** button restores the sample and lays it out again, giving the same result each time.
+- The sample has 12 nodes and 15 edges, a representative selection across these categories:
+  - input ports: none, one, several;
+  - output ports: none, one, several;
+  - compact nodes without port labels, and with one-character port labels (including several ports on a side);
+  - non-compact nodes with port labels, and one with a mix of labelled and unlabelled ports. (A non-compact node always has at least one port label longer than one character, so a non-compact node with no port labels at all cannot exist; the mixed node is the nearest case.)
+- Every edge connects ports that exist, and the sample is a valid DAG that includes fan-in on one port, fan-out from one port, and edges spanning several columns.
+
+### 12.5 README Screenshot
+
+- The README shows a screenshot of the demo directly under its title: the sample graph after its automatic layout, with one node selected so that the selection styling and the node editor pane are visible.

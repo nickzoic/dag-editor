@@ -341,45 +341,76 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
     catch (err) { alert('Import failed: ' + err.message); }
   });
 
-  document.getElementById('sample-btn').addEventListener('click', () => {
-    editor.loadGraph({
-      version: 2,
-      nodes: [
-        { id: 'n1', label: 'Source',     x: 40,  y: 100,
-          inputs: [], outputs: [{ id: 'data', label: 'data' }] },
-        { id: 'n2', label: 'Parse',      x: 240, y: 40,
-          inputs:  [{ id: 'raw',    label: 'raw'    }],
-          outputs: [{ id: 'tokens', label: 'tokens' }] },
-        { id: 'n3', label: 'Validate',   x: 240, y: 160,
-          inputs:  [{ id: 'raw',    label: 'raw'    }],
-          outputs: [{ id: 'ok',     label: 'ok'     },
-                    { id: 'errors', label: 'errors' }] },
-        { id: 'n4', label: 'Transform',  x: 460, y: 40,
-          inputs:  [{ id: 'tokens', label: 'tokens' }],
-          outputs: [{ id: 'out',    label: 'out'    }] },
-        { id: 'n5', label: 'Log errors', x: 460, y: 240,
-          inputs:  [{ id: 'errors', label: 'errors' }],
-          outputs: [] },
-        { id: 'n6', label: 'Merge',      x: 660, y: 90,
-          inputs:  [{ id: 'a',  label: 'a'  },
-                    { id: 'ok', label: 'ok' }],
-          outputs: [{ id: 'out', label: 'out' }] },
-        { id: 'n7', label: 'Output',     x: 860, y: 100,
-          inputs:  [{ id: 'in', label: 'in' }],
-          outputs: [] },
-      ],
-      edges: [
-        { id: 'e1', fromNodeId: 'n1', fromPortId: 'data',   toNodeId: 'n2', toPortId: 'raw'    },
-        { id: 'e2', fromNodeId: 'n1', fromPortId: 'data',   toNodeId: 'n3', toPortId: 'raw'    },
-        { id: 'e3', fromNodeId: 'n2', fromPortId: 'tokens', toNodeId: 'n4', toPortId: 'tokens' },
-        { id: 'e4', fromNodeId: 'n3', fromPortId: 'ok',     toNodeId: 'n6', toPortId: 'ok'     },
-        { id: 'e5', fromNodeId: 'n3', fromPortId: 'errors', toNodeId: 'n5', toPortId: 'errors' },
-        { id: 'e6', fromNodeId: 'n4', fromPortId: 'out',    toNodeId: 'n6', toPortId: 'a'      },
-        { id: 'e7', fromNodeId: 'n6', fromPortId: 'out',    toNodeId: 'n7', toPortId: 'in'     },
-      ],
-    });
+  /* ───────────── sample graph ─────────────
+     12 nodes chosen to cover the node variations:
+       input ports   0: Customers, Orders API, Credentials · 1: Parse, Normalize, Validate, Audit log
+                     several: Join, Enrich, Merge, Warehouse, Dashboard
+       output ports  0: Audit log, Warehouse, Dashboard · 1: Customers, Orders API, Parse, Normalize, Join, Merge
+                     several: Credentials, Validate, Enrich
+       compact (no port label longer than one character)
+         without port labels:        Customers, Parse, Join, Audit log
+         with one-character labels:  Credentials, Normalize, Merge
+       non-compact (some port label longer than one character)
+         with port labels:           Orders API, Validate, Enrich, Warehouse
+         mixed (one labelled port, one unlabelled):  Dashboard */
+  const port = (id, label = '') => ({ id, label });
+
+  const SAMPLE = {
+    version: 2,
+    nodes: [
+      { id: 'n1',  label: 'Customers',   x: 0,    y: 0,
+        inputs: [],                                              outputs: [port('out')] },
+      { id: 'n2',  label: 'Orders API',  x: 0,    y: 140,
+        inputs: [],                                              outputs: [port('orders', 'orders')] },
+      { id: 'n3',  label: 'Credentials', x: 0,    y: 280,
+        inputs: [],                                              outputs: [port('U', 'U'), port('K', 'K')] },
+      { id: 'n4',  label: 'Parse',       x: 200,  y: 140,
+        inputs: [port('in')],                                    outputs: [port('out')] },
+      { id: 'n5',  label: 'Normalize',   x: 200,  y: 20,
+        inputs: [port('x', 'x')],                                outputs: [port('y', 'y')] },
+      { id: 'n6',  label: 'Validate',    x: 400,  y: 140,
+        inputs: [port('record', 'record')],                      outputs: [port('valid', 'valid'), port('invalid', 'invalid')] },
+      { id: 'n7',  label: 'Join',        x: 400,  y: 20,
+        inputs: [port('a'), port('b')],                          outputs: [port('out')] },
+      { id: 'n8',  label: 'Enrich',      x: 600,  y: 80,
+        inputs: [port('record', 'record'), port('lookup', 'lookup')],
+        outputs: [port('enriched', 'enriched'), port('rejects', 'rejects')] },
+      { id: 'n9',  label: 'Audit log',   x: 800,  y: 260,
+        inputs: [port('in')],                                    outputs: [] },
+      { id: 'n10', label: 'Merge',       x: 800,  y: 60,
+        inputs: [port('a', 'a'), port('b', 'b'), port('c', 'c')], outputs: [port('out')] },
+      { id: 'n11', label: 'Warehouse',   x: 1000, y: 20,
+        inputs: [port('rows', 'rows'), port('auth', 'auth')],    outputs: [] },
+      { id: 'n12', label: 'Dashboard',   x: 1000, y: 180,
+        inputs: [port('metrics', 'metrics'), port('extra')],     outputs: [] },
+    ],
+    edges: [
+      { id: 'e1',  fromNodeId: 'n2',  fromPortId: 'orders',   toNodeId: 'n4',  toPortId: 'in'      },
+      { id: 'e2',  fromNodeId: 'n1',  fromPortId: 'out',      toNodeId: 'n5',  toPortId: 'x'       },
+      { id: 'e3',  fromNodeId: 'n4',  fromPortId: 'out',      toNodeId: 'n6',  toPortId: 'record'  },
+      { id: 'e4',  fromNodeId: 'n5',  fromPortId: 'y',        toNodeId: 'n7',  toPortId: 'a'       },
+      { id: 'e5',  fromNodeId: 'n3',  fromPortId: 'U',        toNodeId: 'n7',  toPortId: 'b'       },
+      { id: 'e6',  fromNodeId: 'n6',  fromPortId: 'valid',    toNodeId: 'n8',  toPortId: 'record'  },
+      { id: 'e7',  fromNodeId: 'n7',  fromPortId: 'out',      toNodeId: 'n8',  toPortId: 'lookup'  },
+      { id: 'e8',  fromNodeId: 'n6',  fromPortId: 'invalid',  toNodeId: 'n9',  toPortId: 'in'      },
+      { id: 'e9',  fromNodeId: 'n8',  fromPortId: 'enriched', toNodeId: 'n10', toPortId: 'a'       },
+      { id: 'e10', fromNodeId: 'n6',  fromPortId: 'valid',    toNodeId: 'n10', toPortId: 'b'       },
+      { id: 'e11', fromNodeId: 'n7',  fromPortId: 'out',      toNodeId: 'n10', toPortId: 'c'       },
+      { id: 'e12', fromNodeId: 'n8',  fromPortId: 'rejects',  toNodeId: 'n9',  toPortId: 'in'      },
+      { id: 'e13', fromNodeId: 'n10', fromPortId: 'out',      toNodeId: 'n11', toPortId: 'rows'    },
+      { id: 'e14', fromNodeId: 'n3',  fromPortId: 'K',        toNodeId: 'n11', toPortId: 'auth'    },
+      { id: 'e15', fromNodeId: 'n10', fromPortId: 'out',      toNodeId: 'n12', toPortId: 'metrics' },
+    ],
+  };
+
+  /* Replace the graph with every node and edge configured, then lay it out once. */
+  function loadSample() {
+    editor.loadGraph(SAMPLE);
     clearLog();
-  });
+    editor.autoLayout(true);
+  }
+  document.getElementById('sample-btn').addEventListener('click', loadSample);
+  loadSample();                                      // the demo opens with the sample loaded
 </script>
 </body>
 </html>

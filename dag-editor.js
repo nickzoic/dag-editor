@@ -119,9 +119,9 @@ class DAGEditor {
     this._layoutActive    = false;
     this._layoutPinned    = false;   // double-click mode: re-layout on every graph change
     this._layoutRaf       = null;
-    this._layoutVel       = new Map();
-    this._layoutShadow    = null;
+    this._layoutTargets   = new Map();   // node id → { x, y }: where the running layout is heading
     this._layoutStartTime = 0;
+    this._layoutLastTime  = 0;
 
     this._buildDOM();
     this._attachEvents();
@@ -138,19 +138,65 @@ class DAGEditor {
   static _PORT_HIT_R    = 12;   // hit-test radius
   static _NODE_RX       = 8;
   static _LINE_H        = 16;   // line height of the node label
+  static _LAYOUT_DEADLINE = 1500;   // ms: an auto-layout run always ends by now
+  static _LAYOUT_TAU      = 90;     // ms: time constant of the glide to the target (settles in <0.8 s)
+  static _LAYOUT_COL_GAP  = 70;     // px between columns (strata)
+  static _LAYOUT_NODE_GAP = 40;     // px, minimum gap between nodes in a column
   static _LABEL_W_COMPACT  = 98;    // label wrap width, compact nodes (leaves room for 1-char port labels)
   static _LABEL_W_EXPANDED = 120;   // label wrap width, expanded nodes (label sits in its own header)
 
-  /* A port label is "short" if it has 0 or 1 characters (a surrogate pair counts as one). */
-  static _isShortLabel(s) {
-    return s.length <= 1 || (s.length === 2 && s.codePointAt(0) > 0xFFFF);
+  /* Splits text into user-perceived characters (grapheme clusters), so that e.g.
+   * 'x̅' (x + combining overline), 'é' written as e + accent, flags and ZWJ emoji
+   * sequences each count as ONE character. Null where Intl.Segmenter is unavailable. */
+  static _segmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function')
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+  static _shortLabelCache = new Map();
+
+  /* Approximation used only when Intl.Segmenter is missing: counts code points, but
+   * folds combining marks, variation selectors, skin tones, ZWJ sequences and flag pairs
+   * into the character they belong to. */
+  static _hasAtMostOneCharFallback(s) {
+    let n = 0, glued = false, flag = false;
+    for (const ch of s) {
+      if (glued) { glued = false; continue; }                                  // joined on by a ZWJ
+      if (ch === '\u200d') { glued = true; continue; }
+      if (/[\p{M}\uFE00-\uFE0F\u{1F3FB}-\u{1F3FF}]/u.test(ch)) continue;      // marks, selectors, skin tones
+      if (/[\u{1F1E6}-\u{1F1FF}]/u.test(ch)) {                                 // regional indicators pair into a flag
+        if (flag) { flag = false; continue; }
+        flag = true;
+      } else flag = false;
+      if (++n > 1) return false;
+    }
+    return true;
+  }
+
+  /* A label is "short" if it is empty or a single user-perceived character. */
+  static _isShortLabel(label) {
+    const s = String(label ?? '');
+    if (s.length <= 1) return true;                  // one UTF-16 unit is always one character
+    const cache = DAGEditor._shortLabelCache;
+    let short = cache.get(s);
+    if (short === undefined) {
+      if (DAGEditor._segmenter) {
+        let n = 0;                                   // stop at the second character
+        for (const _ of DAGEditor._segmenter.segment(s)) { if (++n > 1) break; }
+        short = n <= 1;
+      } else {
+        short = DAGEditor._hasAtMostOneCharFallback(s);
+      }
+      if (cache.size >= 1000) cache.clear();
+      cache.set(s, short);
+    }
+    return short;
   }
 
   /* Compact layout: no header/divider; label centred, ports stacked at mid-height.
-   * A node is compact if it has at most one port on each side, OR if every port
-   * on both sides has a label of length 0 or 1 (so many short-labelled ports still fit). */
+   * A node is compact unless one of its PORT labels is longer than one user-perceived
+   * character — so any number of unlabelled or single-character-labelled ports stays
+   * compact, while a longer port label needs the expanded layout. (The node's own
+   * label is not considered: it wraps instead.) */
   _isCompact(node) {
-    if (node.inputs.length <= 1 && node.outputs.length <= 1) return true;
     return node.inputs.every(p => DAGEditor._isShortLabel(p.label)) &&
            node.outputs.every(p => DAGEditor._isShortLabel(p.label));
   }
@@ -1204,7 +1250,8 @@ class DAGEditor {
   _triggerPinnedLayout() {
     if (!this._layoutPinned) return;
     if (this._layoutActive) {
-      // Already running — restart the timer so it gets full time from now
+      // Already running: head for the new arrangement and allow a full run from now
+      this._layoutTargets   = this._computeLayoutTargets();
       this._layoutStartTime = performance.now();
     } else {
       this.autoLayout(true);
@@ -1215,10 +1262,8 @@ class DAGEditor {
     this._layoutActive = active;
     this._updateLayoutBtn();
     if (active) {
-      for (const id of this._nodes.keys()) {
-        this._layoutVel.set(id, { vx: 0, vy: 0 });
-      }
-      this._layoutStartTime = performance.now();
+      this._layoutTargets   = this._computeLayoutTargets();
+      this._layoutStartTime = this._layoutLastTime = performance.now();
       this._layoutTick();
     } else {
       if (this._layoutRaf) { cancelAnimationFrame(this._layoutRaf); this._layoutRaf = null; }
@@ -1226,169 +1271,242 @@ class DAGEditor {
     }
   }
 
+  /* ── Layered layout ──────────────────────────────────────────────────────
+   * Works out where every node should end up (the animation then glides there):
+   *   1. strata (columns): longest path from a root, roots on the left;
+   *   2. an invisible "dummy" vertex in every column a long edge passes through,
+   *      so the edge gets its own lane between nodes instead of cutting across one
+   *      (the lane is as tall as the curve's sweep across the column);
+   *   3. order within each column by barycentre sweeps, which minimises crossings
+   *      (edges are placed by port, so a node's ports are ordered too);
+   *   4. vertical placement: each vertex is pulled to line up with the ports it is
+   *      connected to, subject to a hard minimum gap, so nodes can never overlap;
+   *   5. refinement: neighbouring items in a column are swapped when that gives
+   *      fewer edges cutting through nodes (and fewer crossings) once re-placed.
+   * Deterministic: the same graph and arrangement always give the same result. The columns never
+   * depend on where the nodes start; the order within a column starts from the current vertical
+   * order (so small edits don't reshuffle a layout you already have) and is then improved. */
+  _computeLayoutTargets() {
+    const targets = new Map();
+    const nodes = [...this._nodes.values()];
+    if (!nodes.length) return targets;
+
+    const W = DAGEditor._NODE_W, GAP = DAGEditor._LAYOUT_NODE_GAP;
+    const COL = W + DAGEditor._LAYOUT_COL_GAP;
+    // A lane is DUMMY_H plus the curve's sweep across its column. The sweep depends on where the edge's
+    // ends are, and the ends move to suit the lanes, so it must be capped or dense graphs feed back on
+    // themselves and the placement runs away.
+    const DUMMY_H = 6, DUMMY_PAD = 8, MAX_SWEEP = 160;
+    const stratum = this._computeStrata();
+
+    // 1–2. vertices and the segments between neighbouring columns
+    const layers = [];
+    const add = v => { v.ins = []; v.outs = []; (layers[v.layer] = layers[v.layer] || []).push(v); return v; };
+    const real = new Map();
+    const longEdges = [];            // edges spanning 2+ columns: the ones that can cut through a node
+    for (const n of nodes) {
+      const h = this._nodeHeight(n);
+      real.set(n.id, add({ node: n, layer: stratum.get(n.id) ?? 0, h, pad: GAP / 2, w: 4, key: n.y + h / 2 }));
+    }
+    // A segment joins vertices a → b in neighbouring columns; aOff / bOff are the heights of the
+    // attachment points below each vertex's top (null = the middle, used by dummies).
+    const segment = (a, aOff, b, bOff) => { const g = { a, aOff, b, bOff }; a.outs.push(g); b.ins.push(g); };
+    for (const e of this._edges.values()) {
+      const u = real.get(e.fromNodeId), v = real.get(e.toNodeId);
+      if (!u || !v || v.layer <= u.layer) continue;
+      const fi = u.node.outputs.findIndex(p => p.id === e.fromPortId);
+      const ti = v.node.inputs.findIndex(p => p.id === e.toPortId);
+      const fo = fi < 0 ? u.h / 2 : this._portLocalY(u.node, 'output', fi);
+      const to = ti < 0 ? v.h / 2 : this._portLocalY(v.node, 'input', ti);
+      // horizontal run of the curve, port to port; each dummy sits at its column's centre
+      const xs = u.layer * COL + W, run = v.layer * COL - xs;
+      if (v.layer - u.layer > 1) longEdges.push({ u, fo, v, to });
+      let prev = u, prevOff = fo;
+      for (let l = u.layer + 1; l < v.layer; l++) {
+        const t = (l - u.layer) / (v.layer - u.layer);
+        const d = add({ dummy: true, layer: l, h: DUMMY_H, pad: DUMMY_PAD, w: 1, key: u.key + (v.key - u.key) * t,
+                        edge: { u, fo, v, to }, f: (l * COL + W / 2 - xs) / run, half: (W / 2) / run });
+        segment(prev, prevOff, d, null);
+        prev = d; prevOff = null;
+      }
+      segment(prev, prevOff, v, to);
+    }
+    const L = layers.length;
+    for (let l = 0; l < L; l++) layers[l] = layers[l] || [];
+
+    // Work budgets: the ordering and refinement below get cheaper-but-shallower as the graph grows,
+    // so laying out a big graph never freezes the page (small graphs get the full effort).
+    const segCount  = layers.slice(0, -1).map(layer => layer.reduce((n, v) => n + v.outs.length, 0));
+    const crossCost = segCount.reduce((n, c) => n + c * c / 2, 0);     // one crossing count
+    const nVertices = layers.reduce((n, l) => n + l.length, 0);
+    const nSegments = segCount.reduce((n, c) => n + c, 0);
+
+    // 3. order within columns: start from the current vertical order, then sweep
+    for (const layer of layers) {
+      layer.sort((p, q) => p.key - q.key);
+      layer.forEach((v, i) => { v.order = i; });
+    }
+    const pos = (v, off) => off === null ? v.order : v.order + (off / v.h - 0.5) * 0.9;   // order index, refined by port height
+    const crossings = () => {
+      let c = 0;
+      for (let l = 0; l < L - 1; l++) {
+        const segs = layers[l].flatMap(v => v.outs);
+        for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
+          const s = segs[i], t = segs[j];
+          if ((pos(s.a, s.aOff) - pos(t.a, t.aOff)) * (pos(s.b, s.bOff) - pos(t.b, t.bOff)) < 0) c++;
+        }
+      }
+      return c;
+    };
+    const reorder = (layer, fromLeft) => {
+      const val = new Map();
+      for (const v of layer) {
+        const segs = fromLeft ? v.ins : v.outs;
+        val.set(v, segs.length
+          ? segs.reduce((sum, g) => sum + (fromLeft ? pos(g.a, g.aOff) : pos(g.b, g.bOff)), 0) / segs.length
+          : v.order);
+      }
+      layer.sort((p, q) => (val.get(p) - val.get(q)) || (p.order - q.order));
+      layer.forEach((v, i) => { v.order = i; });
+    };
+    let best = layers.map(l => l.slice()), bestCrossings = crossings();
+    const sweeps = Math.max(2, Math.min(24, Math.floor(4e6 / (crossCost + 1))));
+    for (let it = 0; it < sweeps && bestCrossings > 0; it++) {
+      if (it % 2 === 0) for (let l = 1; l < L; l++) reorder(layers[l], true);
+      else for (let l = L - 2; l >= 0; l--) reorder(layers[l], false);
+      const c = crossings();
+      if (c < bestCrossings) { bestCrossings = c; best = layers.map(l => l.slice()); }
+    }
+    layers.forEach((layer, i) => { layer.splice(0, layer.length, ...best[i]); layer.forEach((v, k) => { v.order = k; }); });
+
+    // 4. vertical placement
+    const sep = (a, b) => a.h + a.pad + b.pad;                     // least distance between the tops of a, then b
+    for (const layer of layers) {                                  // start: packed and centred on y = 0
+      layer.forEach((v, i) => { v.y = i ? layer[i - 1].y + sep(layer[i - 1], v) : 0; });
+      const last = layer[layer.length - 1];
+      const mid  = last ? (last.y + last.h) / 2 : 0;
+      layer.forEach(v => { v.y -= mid; });
+    }
+    const smooth = t => t * t * (3 - 2 * t);     // the curve's height profile along its run
+    const place = layer => {            // weighted isotonic regression: closest positions that respect the gaps
+      const n = layer.length;
+      if (!n) return;
+      for (const v of layer) if (v.dummy) {        // lane = where the curve crosses this column, and how far it sweeps
+        const { u, fo, v: tv, to } = v.edge;
+        const y0 = u.y + fo, dy = tv.y + to - y0;
+        v.h    = DUMMY_H + Math.min(MAX_SWEEP, Math.abs(dy) * (smooth(Math.min(1, v.f + v.half)) - smooth(Math.max(0, v.f - v.half))));
+        v.mid  = y0 + dy * smooth(v.f);
+      }
+      const off = [0];
+      for (let i = 1; i < n; i++) off[i] = off[i - 1] + sep(layer[i - 1], layer[i]);
+      const blocks = [];
+      layer.forEach((v, i) => {
+        const segs = v.ins.length + v.outs.length;
+        let want = v.y;                                            // unconnected: stay put
+        if (v.dummy) want = v.mid - v.h / 2;                       // centred on the curve
+        else if (segs) {                                           // line up with every connected port
+          let sum = 0;
+          for (const g of v.ins)  sum += g.a.y + (g.aOff === null ? g.a.h / 2 : g.aOff) - g.bOff;
+          for (const g of v.outs) sum += g.b.y + (g.bOff === null ? g.b.h / 2 : g.bOff) - g.aOff;
+          want = sum / segs;
+        }
+        let blk = { w: v.w, sum: v.w * (want - off[i]), n: 1 };
+        while (blocks.length && blocks[blocks.length - 1].sum / blocks[blocks.length - 1].w > blk.sum / blk.w) {
+          const p = blocks.pop();
+          blk = { w: p.w + blk.w, sum: p.sum + blk.sum, n: p.n + blk.n };
+        }
+        blocks.push(blk);
+      });
+      let i = 0;
+      for (const b of blocks) { const z = b.sum / b.w; for (let k = 0; k < b.n; k++, i++) layer[i].y = z + off[i]; }
+    };
+    const settle = iterations => {
+      for (let it = 0; it < iterations; it++) {
+        if (it % 2 === 0) for (let l = 0; l < L; l++) place(layers[l]);
+        else for (let l = L - 1; l >= 0; l--) place(layers[l]);
+      }
+    };
+    settle(30);
+
+    // 5. refinement. A long edge is drawn as a curve between its ports, and the lane reserved for it
+    //    can end up on the wrong side of a node (the ordering above ignores node heights), so count
+    //    the edges that really cut through a node and try swapping neighbours to reduce them.
+    const cutThrough = () => {
+      let hits = 0;
+      for (const { u, fo, v, to } of longEdges) {
+        const g = this._edgeGeom({ x: u.layer * COL + W, y: u.y + fo }, { x: v.layer * COL, y: v.y + to });
+        const pts = [];
+        for (let k = 0; k <= 24; k++) {
+          const t = k / 24, m = 1 - t;
+          pts.push({ x: m*m*m*g.sx + 3*m*m*t*g.cx1 + 3*m*t*t*g.cx2 + t*t*t*g.ex,
+                     y: m*m*m*g.sy + 3*m*m*t*g.cy1 + 3*m*t*t*g.cy2 + t*t*t*g.ey });
+        }
+        for (let l = u.layer + 1; l < v.layer; l++) {
+          const x0 = l * COL;
+          for (const n of layers[l]) {
+            if (n.dummy) continue;
+            if (pts.some(q => q.x > x0 - 2 && q.x < x0 + W + 2 && q.y > n.y - 2 && q.y < n.y + n.h + 2)) hits++;
+          }
+        }
+      }
+      return hits;
+    };
+    const score = () => 3 * cutThrough() + crossings();
+    const perTrial = 10 * (nVertices + nSegments) + crossCost + 100 * longEdges.length;
+    let bestScore = score(), budget = Math.min(400, Math.floor(2.5e6 / perTrial));   // bounded, so big graphs stay fast
+    const everything = layers.flat();
+    for (let round = 0; round < 3 && bestScore > 0 && budget > 0; round++) {
+      let improved = false;
+      for (const layer of layers) {
+        for (let i = 0; i + 1 < layer.length && budget > 0; i++, budget--) {
+          const saved = everything.map(v => v.y);
+          const swap = () => { [layer[i], layer[i + 1]] = [layer[i + 1], layer[i]]; layer[i].order = i; layer[i + 1].order = i + 1; };
+          swap();
+          settle(10);
+          const sc = score();
+          if (sc < bestScore) { bestScore = sc; improved = true; }
+          else { swap(); everything.forEach((v, k) => { v.y = saved[k]; }); }
+        }
+      }
+      if (!improved) break;
+    }
+    settle(30);
+
+    let minY = Infinity;
+    for (const v of real.values()) minY = Math.min(minY, v.y);
+    for (const [id, v] of real) targets.set(id, { x: v.layer * COL, y: v.y - minY });
+    return targets;
+  }
+
+  /* One animation frame: glide every node toward its target; always finish by the deadline. */
   _layoutTick() {
     if (!this._layoutActive) return;
-    const ids   = [...this._nodes.keys()];
-    const edges = [...this._edges.values()];
-    const W     = DAGEditor._NODE_W;
-    const PAD_X = 60, PAD_Y = 20, MAX_STEP = 18, DT = 1;
+    const now     = performance.now();
+    const dt      = Math.max(0, Math.min(100, now - this._layoutLastTime));
+    this._layoutLastTime = now;
+    const expired = now - this._layoutStartTime >= DAGEditor._LAYOUT_DEADLINE;
+    const k       = 1 - Math.exp(-dt / DAGEditor._LAYOUT_TAU);
 
-    const DEADLINE = 1500;
-    const elapsed  = performance.now() - this._layoutStartTime;
-    const t        = Math.min(1, elapsed / 1000);
-    const DAMPING  = 0.75 + t * 0.22;
-    if (elapsed >= DEADLINE) { this._layoutActive = false; this._updateLayoutBtn(); this._snapshot(); return; }
-
-    const stratum      = this._computeStrata();
-    const stratTargetX = s => s * (W + PAD_X);
-    const force        = new Map(ids.map(id => [id, { fx: 0, fy: 0 }]));
-
-    // Stratum X anchor
-    for (const id of ids) {
+    let maxErr = 0;
+    for (const [id, t] of this._layoutTargets) {
       const node = this._nodes.get(id);
-      const dx   = stratTargetX(stratum.get(id) ?? 0) - (node.x + W / 2);
-      force.get(id).fx += dx * 0.25;
+      if (!node) continue;
+      node.x += (t.x - node.x) * k;
+      node.y += (t.y - node.y) * k;
+      maxErr = Math.max(maxErr, Math.abs(t.x - node.x), Math.abs(t.y - node.y));
     }
-
-    // Even-spacing + barycentric crossing reduction
-    const neighbours = new Map(ids.map(id => [id, []]));
-    for (const e of edges) {
-      if (neighbours.has(e.fromNodeId) && neighbours.has(e.toNodeId)) {
-        neighbours.get(e.fromNodeId).push(e.toNodeId);
-        neighbours.get(e.toNodeId).push(e.fromNodeId);
-      }
-    }
-    const byStratum = new Map();
-    for (const id of ids) {
-      const s = stratum.get(id) ?? 0;
-      if (!byStratum.has(s)) byStratum.set(s, []);
-      byStratum.get(s).push(id);
-    }
-    const SLOT_STR = 0.20;
-    for (const [, members] of byStratum) {
-      if (members.length < 2) continue;
-      // Slot spacing allows for the tallest node in the stratum (wrapped labels, many ports)
-      const SLOT_GAP = Math.max(...members.map(id => this._nodeHeight(this._nodes.get(id)))) + PAD_Y * 2.5;
-      const weight = id => {
-        const node  = this._nodes.get(id);
-        const cross = (neighbours.get(id) ?? []).filter(nid => (stratum.get(nid) ?? 0) !== (stratum.get(id) ?? 0));
-        if (!cross.length) return node.y;
-        return cross.reduce((a, nid) => a + this._nodes.get(nid).y, 0) / cross.length;
-      };
-      members.sort((a, b) => weight(a) - weight(b));
-      const centY  = members.reduce((a, id) => a + this._nodes.get(id).y, 0) / members.length;
-      const startY = centY - (members.length - 1) * SLOT_GAP / 2;
-      members.forEach((id, k) => {
-        force.get(id).fy += (startY + k * SLOT_GAP - this._nodes.get(id).y) * SLOT_STR;
-      });
-    }
-
-    // Cross-stratum repulsion
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const ai = ids[i], bi = ids[j];
-        if ((stratum.get(ai) ?? 0) === (stratum.get(bi) ?? 0)) continue;
-        const a = this._nodes.get(ai), b = this._nodes.get(bi);
-        const dx = (b.x + W / 2) - (a.x + W / 2), dy = b.y - a.y;
-        const overlapX = (W + PAD_X * 0.5) - Math.abs(dx);
-        const overlapY = (DAGEditor._NODE_MIN_H + PAD_Y) - Math.abs(dy);
-        if (overlapX > 0 && overlapY > 0) {
-          const fx = (dx < 0 ? -1 : 1) * overlapX * 4;
-          force.get(ai).fx -= fx; force.get(bi).fx += fx; continue;
-        }
-        const dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
-        if (dist < W * 2) {
-          const mag = 6000 / (dist * dist);
-          force.get(ai).fx -= (dx/dist)*mag; force.get(ai).fy -= (dy/dist)*mag;
-          force.get(bi).fx += (dx/dist)*mag; force.get(bi).fy += (dy/dist)*mag;
-        }
-      }
-    }
-
-    // Edge Y centering
-    for (const e of edges) {
-      const a = this._nodes.get(e.fromNodeId), b = this._nodes.get(e.toNodeId);
-      if (!a || !b) continue;
-      const dy = b.y - a.y, fy = dy * 0.03;
-      force.get(e.fromNodeId).fy += fy; force.get(e.toNodeId).fy -= fy;
-    }
-
-    // Edge-node repulsion: push nodes away from edges that pass through them.
-    // Sample the bezier at N points, find the closest sample to each non-endpoint
-    // node's centre, and apply a repulsion force perpendicular to the curve.
-    const EDGE_NODE_STR = 80;   // repulsion strength
-    const EDGE_NODE_R   = DAGEditor._NODE_MIN_H * 1.2; // influence radius
-    const SAMPLES       = 12;
-    for (const e of edges) {
-      const na = this._nodes.get(e.fromNodeId), nb = this._nodes.get(e.toNodeId);
-      if (!na || !nb) continue;
-      const p1 = this._firstOutputPos(na), p2 = this._firstInputPos(nb);
-      if (!p1 || !p2) continue;
-      const { sx, sy, cx1, cy1, cx2, cy2, ex, ey } = this._edgeGeom(p1, p2);
-
-      // Pre-sample the curve
-      const pts = [];
-      for (let s = 0; s <= SAMPLES; s++) {
-        const t = s / SAMPLES, mt = 1 - t;
-        pts.push({
-          x: mt*mt*mt*sx + 3*mt*mt*t*cx1 + 3*mt*t*t*cx2 + t*t*t*ex,
-          y: mt*mt*mt*sy + 3*mt*mt*t*cy1 + 3*mt*t*t*cy2 + t*t*t*ey,
-        });
-      }
-
-      for (const id of ids) {
-        if (id === e.fromNodeId || id === e.toNodeId) continue;
+    const settled = expired || maxErr < 0.5;
+    if (settled) {                                   // land exactly on the targets
+      for (const [id, t] of this._layoutTargets) {
         const node = this._nodes.get(id);
-        const cx   = node.x + W / 2;
-        const cy   = node.y + this._nodeHeight(node) / 2;
-
-        // Find closest point on the sampled polyline
-        let minDist = Infinity, nearX = 0, nearY = 0;
-        for (let s = 0; s < pts.length - 1; s++) {
-          const ax = pts[s].x,   ay = pts[s].y;
-          const bx = pts[s+1].x, by = pts[s+1].y;
-          const abx = bx - ax, aby = by - ay;
-          const len2 = abx*abx + aby*aby || 1;
-          const tt   = Math.max(0, Math.min(1, ((cx-ax)*abx + (cy-ay)*aby) / len2));
-          const px   = ax + tt*abx, py = ay + tt*aby;
-          const d    = Math.hypot(cx - px, cy - py);
-          if (d < minDist) { minDist = d; nearX = px; nearY = py; }
-        }
-
-        if (minDist < EDGE_NODE_R && minDist > 0.01) {
-          const mag = EDGE_NODE_STR * (1 - minDist / EDGE_NODE_R);
-          const dx  = (cx - nearX) / minDist;
-          const dy  = (cy - nearY) / minDist;
-          // Push the node away; nudge endpoints in opposite direction (lighter)
-          force.get(id).fx             += dx * mag;
-          force.get(id).fy             += dy * mag;
-          force.get(e.fromNodeId).fx   -= dx * mag * 0.15;
-          force.get(e.fromNodeId).fy   -= dy * mag * 0.15;
-          force.get(e.toNodeId).fx     -= dx * mag * 0.15;
-          force.get(e.toNodeId).fy     -= dy * mag * 0.15;
-        }
+        if (node) { node.x = t.x; node.y = t.y; }
       }
-    }
-
-    // Integrate directly into node positions
-    let totalMovement = 0;
-    for (const id of ids) {
-      const node = this._nodes.get(id);
-      const vel  = this._layoutVel.get(id) || { vx: 0, vy: 0 };
-      const f    = force.get(id);
-      vel.vx = (vel.vx + f.fx * DT) * DAMPING;
-      vel.vy = (vel.vy + f.fy * DT) * DAMPING;
-      const speed = Math.sqrt(vel.vx*vel.vx + vel.vy*vel.vy);
-      if (speed > MAX_STEP) { vel.vx *= MAX_STEP/speed; vel.vy *= MAX_STEP/speed; }
-      node.x += vel.vx * DT; node.y += vel.vy * DT;
-      this._layoutVel.set(id, vel);
-      totalMovement += speed;
     }
 
     this._render();
     this._fitView();
 
-    if (totalMovement < 0.5) { this._layoutActive = false; this._updateLayoutBtn(); this._snapshot(); return; }
+    if (settled) { this._layoutActive = false; this._updateLayoutBtn(); this._snapshot(); return; }
     this._layoutRaf = requestAnimationFrame(() => this._layoutTick());
   }
 
