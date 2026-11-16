@@ -7,28 +7,92 @@
 <link rel="stylesheet" href="dag-editor.css">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, -apple-system, sans-serif; background: #080b12; color: #c8d0f0; height: 100vh; display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr 280px; grid-template-areas: "header header" "canvas sidebar" "footer footer"; }
-header { grid-area: header; padding: 14px 20px; background: #0d1120; border-bottom: 1px solid #1e2538; display: flex; align-items: baseline; gap: 16px; }
+[hidden] { display: none !important; }
+
+/* ── Page: header / workspace / footer fill the full viewport height ── */
+html, body { height: 100%; }
+body {
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #080b12; color: #c8d0f0;
+}
+header { flex: none; padding: 14px 20px; background: #0d1120; border-bottom: 1px solid #1e2538; display: flex; align-items: baseline; gap: 16px; }
 header h1 { font-size: 15px; font-weight: 600; color: #e8ecff; letter-spacing: .02em; }
 header p  { font-size: 12px; color: #4a5580; }
-#canvas-container { grid-area: canvas; overflow: hidden; }
-aside { grid-area: sidebar; background: #0d1120; border-left: 1px solid #1e2538; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+footer { flex: none; padding: 8px 20px; background: #0d1120; border-top: 1px solid #1e2538; font-size: 11px; color: #2a3458; }
+
+/* The workspace takes all remaining height. Left column: the graph editor
+   (flexible) stacked above the node editor (fixed height). Right column: sidebar. */
+.workspace {
+  flex: 1 1 0; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas: "canvas sidebar" "nodepane sidebar";
+}
+#canvas-container { grid-area: canvas; min-width: 0; min-height: 0; }
+
+/* ── Node editor pane ── */
+#node-pane {
+  grid-area: nodepane;
+  height: 232px; min-height: 0;
+  display: flex; flex-direction: column;
+  padding: 12px 16px;
+  background: #0d1120; border-top: 1px solid #1e2538;
+}
+.np-empty { margin: auto; font-size: 12px; color: #4a5580; }
+.np-body  { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.np-head  { flex: none; display: flex; align-items: center; gap: 10px; }
+.np-head label, .np-col-head h3 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: uppercase; letter-spacing: .08em; }
+.np-head input { flex: 0 1 320px; }
+.np-nodeid { font-family: monospace; font-size: 10px; color: #3a4466; }
+.np-cols  { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.np-col   { min-height: 0; display: flex; flex-direction: column; }
+.np-col-head { flex: none; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.np-ports { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.np-port  { display: flex; align-items: center; gap: 8px; }
+.np-port input { flex: 1; min-width: 0; }
+.np-pid   { min-width: 34px; font-family: monospace; font-size: 10px; color: #4a5580; }
+.np-edges { font-size: 10px; color: #e09040; white-space: nowrap; }
+.np-none  { font-size: 11px; font-style: italic; color: #3a4466; }
+
+#node-pane input[type=text] {
+  padding: 5px 8px; font: inherit; font-size: 12px; color: #c8d0f0;
+  background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; outline: none;
+}
+#node-pane input[type=text]:focus { border-color: #4a7cff; }
+.np-add, .np-del {
+  font: inherit; font-size: 11px; color: #8899cc; cursor: pointer;
+  background: #1e2538; border: 1px solid #3a4466; border-radius: 5px; padding: 3px 9px;
+  transition: background .15s, color .15s;
+}
+.np-add:hover { background: #252c42; color: #c8d0f0; }
+.np-del { padding: 3px 8px; line-height: 1; }
+.np-del:hover { background: #3a1e26; color: #ff9090; border-color: #e74c3c; }
+
+/* ── Sidebar ── */
+aside { grid-area: sidebar; min-height: 0; background: #0d1120; border-left: 1px solid #1e2538; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: uppercase; letter-spacing: .08em; }
 #event-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; min-height: 60px; }
 .log-entry { font-size: 11px; padding: 6px 8px; border-radius: 5px; background: #131929; border-left: 3px solid; line-height: 1.4; animation: fadeIn .2s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
 .log-entry.created       { border-color: #2ecc71; color: #7fffc4; }
 .log-entry.selected      { border-color: #4a7cff; color: #a0c0ff; }
+.log-entry.deselected    { border-color: #3a4466; color: #6a7aa8; }
+.log-entry.updated       { border-color: #b08ae8; color: #d4bcff; }
 .log-entry.deleted       { border-color: #e74c3c; color: #ff9090; }
 .log-entry.edge-created  { border-color: #a0e080; color: #c8f0a8; }
 .log-entry.edge-deleted  { border-color: #e09040; color: #f0c888; }
+.log-entry.placeholder   { border-color: #2a3458; color: #4a5580; }
 .log-label { display: inline-block; font-weight: 700; margin-right: 4px; text-transform: uppercase; font-size: 9px; letter-spacing: .08em; opacity: .8; }
+.log-detail { opacity: .55; font-size: 10px; }
 #shortcuts { font-size: 11px; color: #4a5580; line-height: 2; }
 #shortcuts kbd { background: #1e2538; border: 1px solid #3a4466; border-radius: 3px; padding: 1px 5px; font-size: 10px; color: #8899cc; font-family: inherit; }
 .demo-btn { background: #1e2538; border: 1px solid #3a4466; color: #8899cc; border-radius: 6px; padding: 7px 12px; font-size: 12px; cursor: pointer; transition: background .15s; width: 100%; }
 .demo-btn:hover { background: #252c42; color: #c8d0f0; }
-#json-out { width: 100%; height: 110px; resize: vertical; background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; color: #7fffc4; font-family: monospace; font-size: 10px; padding: 6px; box-sizing: border-box; }
-footer { grid-area: footer; padding: 8px 20px; background: #0d1120; border-top: 1px solid #1e2538; font-size: 11px; color: #2a3458; }
+#json-out { width: 100%; height: 110px; resize: vertical; background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; color: #7fffc4; font-family: monospace; font-size: 10px; padding: 6px; }
 </style>
 </head>
 <body>
@@ -36,84 +100,244 @@ footer { grid-area: footer; padding: 8px 20px; background: #0d1120; border-top: 
   <h1>DAG Editor</h1>
   <p>Standalone directed-acyclic-graph editor · dag-editor.js</p>
 </header>
-<div id="canvas-container"></div>
-<aside>
-  <div><h2>Events</h2></div>
-  <div id="event-log">
-    <div class="log-entry selected" style="border-color:#2a3458;color:#4a5580">
-      <span class="log-label">—</span>Events will appear here
+
+<div class="workspace">
+  <div id="canvas-container"></div>
+
+  <section id="node-pane" aria-label="Node editor">
+    <div class="np-empty" id="np-empty">Select a node to edit its label and ports.</div>
+    <div class="np-body" id="np-body" hidden>
+      <div class="np-head">
+        <label for="np-label">Label</label>
+        <input type="text" id="np-label" spellcheck="false" autocomplete="off">
+        <span class="np-nodeid" id="np-nodeid"></span>
+      </div>
+      <div class="np-cols">
+        <div class="np-col">
+          <div class="np-col-head"><h3>Inputs</h3><button class="np-add" id="np-add-input">+ Add input</button></div>
+          <div class="np-ports" id="np-inputs"></div>
+        </div>
+        <div class="np-col">
+          <div class="np-col-head"><h3>Outputs</h3><button class="np-add" id="np-add-output">+ Add output</button></div>
+          <div class="np-ports" id="np-outputs"></div>
+        </div>
+      </div>
     </div>
-  </div>
-  <div>
-    <h2 style="margin-bottom:8px">Import / Export</h2>
-    <textarea id="json-out" spellcheck="false" placeholder="JSON appears here after export…"></textarea>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="demo-btn" id="export-btn" style="flex:1">Export JSON</button>
-      <button class="demo-btn" id="import-btn" style="flex:1">Import JSON</button>
+  </section>
+
+  <aside>
+    <div><h2>Events</h2></div>
+    <div id="event-log"></div>
+    <div>
+      <h2 style="margin-bottom:8px">Import / Export</h2>
+      <textarea id="json-out" spellcheck="false" placeholder="JSON appears here after export…"></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="demo-btn" id="export-btn" style="flex:1">Export JSON</button>
+        <button class="demo-btn" id="import-btn" style="flex:1">Import JSON</button>
+      </div>
     </div>
-  </div>
-  <div>
-    <h2 style="margin-bottom:8px">Keyboard shortcuts</h2>
-    <div id="shortcuts">
-      <kbd>Click</kbd> canvas → add node<br>
-      Drag output port → edge forward<br>
-      Drag input port → edge backward<br>
-      Drop on canvas → new node<br>
-      <kbd>Dbl-click</kbd> edge → insert node<br>
-      <kbd>Dbl-click</kbd> node → rename<br>
-      <kbd>Del</kbd> / <kbd>Backspace</kbd> → delete<br>
-      <kbd>Enter</kbd> → rename selected<br>
-      <kbd>N</kbd> → new node at centre<br>
-      <kbd>Tab</kbd> → cycle selection<br>
-      <kbd>Esc</kbd> → deselect<br>
-      <kbd>L</kbd> → one-shot auto-layout<br>
-      <kbd>Shift</kbd>+<kbd>L</kbd> → pin auto-layout<br>
-      Dbl-click Layout btn → pin<br>
-      <kbd>Ctrl</kbd>+<kbd>Z</kbd> → undo<br>
-      <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> → redo<br>
-      <kbd>Scroll</kbd> → zoom<br>
-      <kbd>Alt</kbd>+drag → pan
+    <div>
+      <h2 style="margin-bottom:8px">Keyboard shortcuts</h2>
+      <div id="shortcuts">
+        <kbd>Click</kbd> canvas → add node<br>
+        Drag output port → edge forward<br>
+        Drag input port → edge backward<br>
+        Drop on canvas → new node<br>
+        <kbd>Dbl-click</kbd> edge → insert node<br>
+        <kbd>Del</kbd> / <kbd>Backspace</kbd> → delete<br>
+        <kbd>N</kbd> → new node at centre<br>
+        <kbd>Tab</kbd> → cycle selection<br>
+        <kbd>Esc</kbd> → deselect<br>
+        <kbd>L</kbd> → one-shot auto-layout<br>
+        <kbd>Shift</kbd>+<kbd>L</kbd> → pin auto-layout<br>
+        Dbl-click Layout btn → pin<br>
+        <kbd>Ctrl</kbd>+<kbd>Z</kbd> → undo<br>
+        <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> → redo<br>
+        <kbd>Scroll</kbd> → zoom<br>
+        <kbd>Alt</kbd>+drag → pan
+      </div>
     </div>
-  </div>
-  <button class="demo-btn" id="sample-btn">Load sample graph</button>
-</aside>
+    <button class="demo-btn" id="sample-btn">Load sample graph</button>
+  </aside>
+</div>
+
 <footer>dag-editor.js — DAGNode / DAGEdge, multi-port nodes, compact layout, JSON import/export</footer>
+
 <script src="dag-editor.js"></script>
 <script>
-  const container = document.getElementById('canvas-container');
-  const log       = document.getElementById('event-log');
-  const jsonOut   = document.getElementById('json-out');
-  const MAX_LOG   = 40;
+  const log     = document.getElementById('event-log');
+  const jsonOut = document.getElementById('json-out');
+  const MAX_LOG = 40;
+
+  /* ───────────── event log ───────────── */
+  const LOG_LABELS = {
+    created:        '＋ Node created',
+    selected:       '◎ Node selected',
+    deselected:     '○ Node deselected',
+    updated:        '✎ Node updated',
+    deleted:        '✕ Node deleted',
+    'edge-created': '→ Edge created',
+    'edge-deleted': '✕ Edge deleted',
+  };
 
   function addLog(event) {
-    const e = document.createElement('div');
-    e.className = `log-entry ${event.type}`;
-    const labels = {
-      created:        '＋ Node created',
-      selected:       '◎ Node selected',
-      deleted:        '✕ Node deleted',
-      'edge-created': '→ Edge created',
-      'edge-deleted': '✕ Edge deleted',
-    };
-    let detail = '';
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${event.type}`;
+
+    const label = document.createElement('span');
+    label.className = 'log-label';
+    label.textContent = LOG_LABELS[event.type] || event.type;
+    entry.appendChild(label);
+
+    const detail = document.createElement('span');
+    detail.className = 'log-detail';
     if (event.node) {
-      detail = `${event.node.label} <span style="opacity:.4;font-size:10px">(${event.node.id})</span>`;
+      entry.append(`${event.node.label} `);          // textContent-safe: labels are user-editable
+      detail.textContent = `(${event.node.id})`;
     } else if (event.edge) {
-      detail = `<span style="opacity:.4;font-size:10px">${event.edge.fromNodeId}.${event.edge.fromPortId} → ${event.edge.toNodeId}.${event.edge.toPortId}</span>`;
+      const e = event.edge;
+      detail.textContent = `${e.fromNodeId}.${e.fromPortId} → ${e.toNodeId}.${e.toPortId}`;
     }
-    e.innerHTML = `<span class="log-label">${labels[event.type] || event.type}</span>${detail}`;
-    log.prepend(e);
+    entry.appendChild(detail);
+
+    log.prepend(entry);
     while (log.children.length > MAX_LOG) log.lastChild.remove();
   }
 
-  const editor = new DAGEditor(container, addLog);
+  function clearLog() {
+    log.replaceChildren();
+    const ph = document.createElement('div');
+    ph.className = 'log-entry placeholder';
+    ph.textContent = 'Events will appear here';
+    log.appendChild(ph);
+  }
 
+  /* ───────────── node editor pane ───────────── */
+  const pane = {
+    empty:   document.getElementById('np-empty'),
+    body:    document.getElementById('np-body'),
+    label:   document.getElementById('np-label'),
+    nodeId:  document.getElementById('np-nodeid'),
+    inputs:  document.getElementById('np-inputs'),
+    outputs: document.getElementById('np-outputs'),
+    node:    null,                                   // the DAGNode being edited
+  };
+
+  const paneHasTypingFocus = () => {
+    const a = document.activeElement;
+    return a && a.tagName === 'INPUT' && a.closest('#node-pane');
+  };
+
+  /* How many edges are attached to a port (they are removed along with it). */
+  function edgeCount(node, direction, portId) {
+    return editor.getGraph().edges.filter(e => direction === 'output'
+      ? e.fromNodeId === node.id && e.fromPortId === portId
+      : e.toNodeId   === node.id && e.toPortId   === portId).length;
+  }
+
+  function portRow(node, direction, port) {
+    const row = document.createElement('div');
+    row.className = 'np-port';
+
+    const pid = document.createElement('span');
+    pid.className = 'np-pid';
+    pid.textContent = port.id;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = port.label;
+    input.placeholder = 'label';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', `${direction} port ${port.id} label`);
+    input.addEventListener('input', () => editor.setPortLabel(node.id, direction, port.id, input.value));
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
+
+    const n = edgeCount(node, direction, port.id);
+    const edges = document.createElement('span');
+    edges.className = 'np-edges';
+    edges.textContent = n ? `${n} edge${n > 1 ? 's' : ''}` : '';
+
+    const del = document.createElement('button');
+    del.className = 'np-del';
+    del.textContent = '×';
+    del.title = n ? `Remove port and its ${n} edge${n > 1 ? 's' : ''}` : 'Remove port';
+    del.addEventListener('click', () => {
+      editor.removePort(node.id, direction, port.id);
+      showNode(pane.node);
+    });
+
+    row.append(pid, input, edges, del);
+    return row;
+  }
+
+  function renderPorts(node, direction, host) {
+    host.replaceChildren();
+    const ports = direction === 'input' ? node.inputs : node.outputs;
+    if (!ports.length) {
+      const none = document.createElement('div');
+      none.className = 'np-none';
+      none.textContent = `No ${direction} ports`;
+      host.appendChild(none);
+      return;
+    }
+    for (const port of ports) host.appendChild(portRow(node, direction, port));
+  }
+
+  function showNode(node) {
+    pane.node = node;
+    pane.empty.hidden = !!node;
+    pane.body.hidden  = !node;
+    if (!node) return;
+    if (document.activeElement !== pane.label) pane.label.value = node.label;
+    pane.nodeId.textContent = node.id;
+    renderPorts(node, 'input',  pane.inputs);
+    renderPorts(node, 'output', pane.outputs);
+  }
+
+  /* Re-sync the pane after a change, without disturbing text being typed. */
+  function refreshPane() {
+    if (pane.node && !paneHasTypingFocus()) showNode(pane.node);
+  }
+
+  pane.label.addEventListener('input', () => {
+    if (pane.node) editor.setNodeLabel(pane.node.id, pane.label.value);
+  });
+  pane.label.addEventListener('keydown', e => { if (e.key === 'Enter') pane.label.blur(); });
+
+  function addPortAndFocus(direction) {
+    if (!pane.node) return;
+    editor.addPort(pane.node.id, direction);
+    showNode(pane.node);
+    const host = direction === 'input' ? pane.inputs : pane.outputs;
+    host.lastElementChild?.querySelector('input')?.focus();
+  }
+  document.getElementById('np-add-input').addEventListener('click',  () => addPortAndFocus('input'));
+  document.getElementById('np-add-output').addEventListener('click', () => addPortAndFocus('output'));
+
+  /* ───────────── editor ───────────── */
+  function onEditorEvent(event) {
+    addLog(event);
+    switch (event.type) {
+      case 'selected':   showNode(event.node); break;
+      case 'deselected': showNode(null); break;
+      case 'deleted':    if (pane.node && pane.node.id === event.node.id) showNode(null); break;
+      case 'updated':
+      case 'edge-created':
+      case 'edge-deleted': refreshPane(); break;
+    }
+  }
+
+  const editor = new DAGEditor(document.getElementById('canvas-container'), onEditorEvent);
+  clearLog();
+
+  /* ───────────── import / export / sample ───────────── */
   document.getElementById('export-btn').addEventListener('click', () => {
     jsonOut.value = editor.exportJSON(2); jsonOut.select();
   });
   document.getElementById('import-btn').addEventListener('click', () => {
     const src = jsonOut.value.trim(); if (!src) return;
-    try { editor.importJSON(src); log.innerHTML = ''; }
+    try { editor.importJSON(src); clearLog(); }
     catch (err) { alert('Import failed: ' + err.message); }
   });
 
@@ -122,27 +346,27 @@ footer { grid-area: footer; padding: 8px 20px; background: #0d1120; border-top: 
       version: 2,
       nodes: [
         { id: 'n1', label: 'Source',     x: 40,  y: 100,
-           inputs: [], outputs: [{ id: 'data', label: 'data' }] },
+          inputs: [], outputs: [{ id: 'data', label: 'data' }] },
         { id: 'n2', label: 'Parse',      x: 240, y: 40,
-           inputs:  [{ id: 'raw',    label: 'raw'    }],
-           outputs: [{ id: 'tokens', label: 'tokens' }] },
+          inputs:  [{ id: 'raw',    label: 'raw'    }],
+          outputs: [{ id: 'tokens', label: 'tokens' }] },
         { id: 'n3', label: 'Validate',   x: 240, y: 160,
-           inputs:  [{ id: 'raw',    label: 'raw'    }],
-           outputs: [{ id: 'ok',     label: 'ok'     },
-                     { id: 'errors', label: 'errors' }] },
+          inputs:  [{ id: 'raw',    label: 'raw'    }],
+          outputs: [{ id: 'ok',     label: 'ok'     },
+                    { id: 'errors', label: 'errors' }] },
         { id: 'n4', label: 'Transform',  x: 460, y: 40,
-           inputs:  [{ id: 'tokens', label: 'tokens' }],
-           outputs: [{ id: 'out',    label: 'out'    }] },
+          inputs:  [{ id: 'tokens', label: 'tokens' }],
+          outputs: [{ id: 'out',    label: 'out'    }] },
         { id: 'n5', label: 'Log errors', x: 460, y: 240,
-           inputs:  [{ id: 'errors', label: 'errors' }],
-           outputs: [] },
+          inputs:  [{ id: 'errors', label: 'errors' }],
+          outputs: [] },
         { id: 'n6', label: 'Merge',      x: 660, y: 90,
-           inputs:  [{ id: 'a',   label: 'a'   },
-                     { id: 'ok',  label: 'ok'  }],
-           outputs: [{ id: 'out', label: 'out' }] },
+          inputs:  [{ id: 'a',  label: 'a'  },
+                    { id: 'ok', label: 'ok' }],
+          outputs: [{ id: 'out', label: 'out' }] },
         { id: 'n7', label: 'Output',     x: 860, y: 100,
-           inputs:  [{ id: 'in', label: 'in' }],
-           outputs: [] },
+          inputs:  [{ id: 'in', label: 'in' }],
+          outputs: [] },
       ],
       edges: [
         { id: 'e1', fromNodeId: 'n1', fromPortId: 'data',   toNodeId: 'n2', toPortId: 'raw'    },
@@ -154,7 +378,7 @@ footer { grid-area: footer; padding: 8px 20px; background: #0d1120; border-top: 
         { id: 'e7', fromNodeId: 'n6', fromPortId: 'out',    toNodeId: 'n7', toPortId: 'in'     },
       ],
     });
-    log.innerHTML = '';
+    clearLog();
   });
 </script>
 </body>

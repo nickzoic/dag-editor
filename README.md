@@ -28,7 +28,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 </script>
 ```
 
-Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example with a sample pipeline graph, event log, and JSON import/export.
+Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example: the graph editor fills the page height, with a **node editor pane** below it (edit the selected node's label and add, remove and label its ports), plus a sample pipeline graph, event log, and JSON import/export.
 
 ---
 
@@ -49,6 +49,15 @@ editor.addNode('Transform', 100, 80, {
 editor.addNode('Filter');
 ```
 
+The canvas has no built-in label editor — the host page supplies the UI and drives these methods (the demo's node editor pane is a working example):
+
+```js
+editor.setNodeLabel('n3', 'Validate input');
+const port = editor.addPort('n3', 'output', { label: 'warnings' });  // id auto-generated: "out", "out2", …
+editor.setPortLabel('n3', 'output', port.id, 'warn');
+editor.removePort('n3', 'output', port.id);   // also removes every edge attached to that port
+```
+
 ---
 
 ## Mouse Interactions
@@ -62,7 +71,6 @@ editor.addNode('Filter');
 | Drag output port → canvas | Draw edge; create destination node on drop |
 | Drag output port → input port or node | Connect edge |
 | Drag input port (reverse) | Same, in reverse direction |
-| Double-click node | Rename inline |
 | Double-click edge | Insert a new node on the edge |
 | Scroll | Zoom |
 | Alt + drag | Pan |
@@ -77,7 +85,6 @@ editor.addNode('Filter');
 | `Escape` | Deselect |
 | `N` | New node at canvas centre |
 | `Tab` / `Shift+Tab` | Cycle node selection |
-| `Enter` | Rename selected node |
 | `L` | One-shot auto-layout |
 | `Shift+L` | Toggle pinned auto-layout |
 | `Ctrl+Z` | Undo |
@@ -113,6 +120,12 @@ editor.addEdge(fromNodeId, fromPortId, toNodeId, toPortId)  // → boolean
 editor.deleteNode(id)
 editor.deleteEdge(id)
 
+// Node and port editing  (direction is 'input' or 'output')
+editor.setNodeLabel(nodeId, label)                    // → boolean
+editor.addPort(nodeId, direction, { id?, label? })    // → port | null
+editor.removePort(nodeId, direction, portId)          // → boolean; removes attached edges too
+editor.setPortLabel(nodeId, direction, portId, label) // → boolean
+
 // Query
 editor.getGraph()  // → { nodes: DAGNode[], edges: DAGEdge[] }
 
@@ -134,11 +147,15 @@ editor.destroy()           // remove all DOM
 
 ```js
 { type: 'created',      node: DAGNode }  // node created
-{ type: 'selected',     node: DAGNode }  // node selected or renamed
+{ type: 'selected',     node: DAGNode }  // node selected
+{ type: 'deselected',   node: DAGNode }  // node no longer selected (another selected, cleared, graph replaced, undo/redo)
+{ type: 'updated',      node: DAGNode }  // label changed, or a port added / removed / relabelled
 { type: 'deleted',      node: DAGNode }  // node deleted
 { type: 'edge-created', edge: DAGEdge }  // edge created
 { type: 'edge-deleted', edge: DAGEdge }  // edge deleted
 ```
+
+Removing a port that has edges fires `edge-deleted` for each, then `updated`.
 
 `DAGNode` properties: `id`, `label`, `x`, `y`, `inputs[]`, `outputs[]`  
 `DAGEdge` properties: `id`, `fromNodeId`, `fromPortId`, `toNodeId`, `toPortId`

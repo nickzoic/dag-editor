@@ -10,7 +10,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 - Each node has a unique string ID, a display label, a position (x, y), and zero or more named input ports and zero or more named output ports.
 - Each port has a unique-within-node ID and an optional display label.
-- Node labels must be unique across all nodes. When a node is created without an explicit label, generate a name that does not already exist in the graph (e.g. "Node", "Node 2", "Node 3", …).
+- Node labels must be unique across all nodes. When a node is created without an explicit label, generate a name that does not already exist in the graph (e.g. "Node", "Node 2", "Node 3", …). Labels the user later types in are not forced to be unique.
 - A node with zero or one input port and zero or one output port is a **compact** node.
 
 ### 1.2 Edges
@@ -92,9 +92,9 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
   - Empty canvas → creates a new node at the drop position and connects from it.
 - If the connection would violate the validity rules (§1.3), it is rejected.
 
-### 3.5 Renaming
+### 3.5 Editing Labels and Ports
 
-- Double-clicking a node opens an inline text input for renaming it.
+- The canvas has **no** inline label editor: double-clicking a node or pressing Enter does nothing. Node labels and ports are edited through the programmatic API (§9); the host page supplies the UI.
 
 ### 3.6 Inserting a Node on an Edge
 
@@ -122,7 +122,6 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 | `Escape` | Deselect |
 | `N` | Create a new node at the canvas centre |
 | `Tab` / `Shift+Tab` | Cycle node selection forward/backward |
-| `Enter` | Rename selected node |
 | `L` | Toggle one-shot auto-layout |
 | `Shift+L` | Toggle pinned auto-layout |
 | `Ctrl+Z` / `Cmd+Z` | Undo |
@@ -177,9 +176,12 @@ The simulation stops when either:
 
 ## 7. Undo / Redo
 
-- Every graph mutation is undoable: creating nodes, deleting nodes/edges, moving nodes (on drag end), renaming nodes, drawing edges, loading a graph.
+- Every graph mutation is undoable: creating nodes, deleting nodes/edges, moving nodes (on drag end), changing labels, adding/removing ports, drawing edges, loading a graph.
 - Undo/redo stack depth: at least 100 steps.
+- The first undo reverts the most recent change (the initial state is the undo baseline).
 - Redoing is only possible if no mutation has occurred since the last undo.
+- A burst of edits to the same label (e.g. typing) is one undo step.
+- Undo, redo and loading a graph clear the selection.
 
 ---
 
@@ -190,12 +192,16 @@ The callback receives a plain event object for every graph change:
 | `type` | Payload | Fired when |
 |--------|---------|------------|
 | `'created'` | `node: DAGNode` | A node is created |
-| `'selected'` | `node: DAGNode` | A node is selected or renamed |
+| `'selected'` | `node: DAGNode` | A node is selected |
+| `'deselected'` | `node: DAGNode` | A node stops being selected (another node or edge selected, selection cleared, graph replaced, undo/redo) |
+| `'updated'` | `node: DAGNode` | A node's label changes, or one of its ports is added, removed or relabelled |
 | `'deleted'` | `node: DAGNode` | A node is deleted |
 | `'edge-created'` | `edge: DAGEdge` | An edge is created (including bridge edges) |
 | `'edge-deleted'` | `edge: DAGEdge` | An edge is deleted (including edges removed with their node) |
 
 When a node with 1-in-1-out is deleted and edges are bridged, the event order is: `edge-deleted` for each removed edge, then `deleted` for the node, then `edge-created` for each bridge edge.
+
+When a port is removed, the order is: `edge-deleted` for each edge that was attached to it, then `updated` for the node.
 
 ---
 
@@ -208,6 +214,10 @@ addNode(label, x?, y?, { inputs?, outputs? })  → DAGNode
 addEdge(fromNodeId, fromPortId, toNodeId, toPortId)  → boolean
 deleteNode(id)
 deleteEdge(id)
+setNodeLabel(nodeId, label)                     → boolean
+addPort(nodeId, direction, { id?, label? })     → port | null
+removePort(nodeId, direction, portId)           → boolean
+setPortLabel(nodeId, direction, portId, label)  → boolean
 getGraph()  → { nodes: DAGNode[], edges: DAGEdge[] }
 loadGraph(data)         // replaces current graph; fires no events
 autoLayout(active)      // programmatic layout control
@@ -221,6 +231,19 @@ destroy()               // remove all DOM
 ```
 
 All valid node and edge operations fire the appropriate `onChange` events.
+
+### 9.1 Node and Port Editing
+
+- `direction` is `'input'` or `'output'`; anything else is an error.
+- `addPort` generates an id unique within that side of the node (`in`, `in2`, … / `out`, `out2`, …) unless one is given; it returns `null` if the node is unknown or the given id is already used on that side. New ports have an empty label unless given one.
+- `removePort` removes the port **and every edge attached to it**; if the selected edge is one of them, the selection is cleared. Returns `false` for an unknown node or port.
+- Adding or removing ports changes the node's layout class immediately: a node with ≤1 input and ≤1 output is compact, otherwise expanded.
+- A pinned auto-layout re-runs when removing a port deletes edges, but not for label changes or for adding a port.
+- Each operation is one undo step (except repeated edits of one label, see §7).
+
+### 9.2 Container Sizing
+
+- The editor fills its container. It only applies a default height (480 px) when the page's CSS leaves the container with no height at all, so a container sized by a flex or grid layout is respected.
 
 ---
 
@@ -267,3 +290,26 @@ Version 1 graphs (nodes without ports, edges with `from`/`to` instead of `fromNo
 - Port dots use a consistent colour across their three states: dim (rest), blue ring (node hovered), solid blue (port hovered), teal (selected node), orange (drop target).
 - Edge states: dim (rest), slightly brighter (hovered), teal with glow (selected).
 - All colour values and spacing constants are defined as CSS custom properties so they can be overridden.
+
+---
+
+## 12. Demo Page
+
+The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as separate files and shows the component in use.
+
+### 12.1 Layout
+
+- The page fills the full viewport height with no page scroll: a slim header, a workspace that takes all remaining height, and a slim footer.
+- In the workspace, the graph editor is stacked above a **node editor pane** in the left column; the graph editor takes all height not used by the pane. The sidebar (event log, import/export, shortcut list, sample loader) is on the right.
+
+### 12.2 Node Editor Pane
+
+- Shows a placeholder until a node is selected; clears again when that node is deselected or deleted.
+- For the selected node it shows an editable **label** field and two lists, **Inputs** and **Outputs**. Each port row shows the port id, an editable label field, the number of edges attached (when any), and a remove button. Each list has an **Add** button; a newly added port's label field takes focus.
+- Typing in a label field updates the node on the canvas live.
+- Removing a port that has edges also removes those edges (the row and button make the edge count visible beforehand).
+- The pane stays in sync with changes made on the canvas (edges added or removed) but never rebuilds itself while the user is typing in it.
+
+### 12.3 Event Log
+
+- Logs every `onChange` event, including `deselected` and `updated`. User-supplied labels are shown as plain text, never interpreted as HTML.

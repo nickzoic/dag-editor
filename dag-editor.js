@@ -6,10 +6,14 @@
  *
  * Usage:
  *   const editor = new DAGEditor(containerDiv, (event) => {
- *     // event.type: 'created'|'selected'|'deleted'|'edge-created'|'edge-deleted'
+ *     // event.type: 'created'|'selected'|'deselected'|'updated'|'deleted'
+ *     //             |'edge-created'|'edge-deleted'
  *     // event.node  → DAGNode instance  (node events)
  *     // event.edge  → DAGEdge instance  (edge events)
  *   });
+ *
+ * Node labels and ports are edited through the API (the host page supplies the
+ * UI): setNodeLabel(), addPort(), removePort(), setPortLabel().
  *
  * Mouse interactions:
  *   - Click empty canvas      → create node
@@ -19,14 +23,13 @@
  *                               drop on canvas to create + connect a new node
  *   - Drag input port (●)     → same, in reverse direction
  *   - Click edge              → select edge
- *   - Double-click node label → rename inline
+ *   - Double-click edge       → insert a new node on the edge
  *
  * Keyboard shortcuts:
  *   Delete / Backspace  → delete selected
  *   Escape              → deselect
  *   N                   → new node at centre
  *   Tab / Shift+Tab     → cycle node selection
- *   Enter               → rename selected node
  *   L                   → toggle auto-layout
  *   Ctrl+Z / Cmd+Z      → undo
  *   Ctrl+Shift+Z        → redo
@@ -108,8 +111,9 @@ class DAGEditor {
     this._panning   = null;
     this._viewX = 0; this._viewY = 0; this._scale = 1;
 
-    this._undoStack = [];
+    this._undoStack = [];        // snapshots; index 0 is the baseline (initial state)
     this._redoStack = [];
+    this._lastSnapKey = null;    // lets repeated edits of one field share an undo step
 
     this._layoutActive    = false;
     this._layoutPinned    = false;   // double-click mode: re-layout on every graph change
@@ -121,6 +125,7 @@ class DAGEditor {
     this._buildDOM();
     this._attachEvents();
     this._render();
+    this._undoStack.push(this._serialise());
   }
 
   /* ───────────────── layout constants ─────────────── */
@@ -194,7 +199,9 @@ class DAGEditor {
     c.style.userSelect = 'none';
     c.style.outline    = 'none';
     if (!c.style.width)  c.style.width  = '100%';
-    if (!c.style.height) c.style.height = '480px';
+    // Fall back to a default height only if the page's CSS gave the container none
+    // (otherwise honour the layout, e.g. a flex/grid cell that fills the page).
+    if (!c.style.height && c.getBoundingClientRect().height < 1) c.style.height = '480px';
     c.setAttribute('tabindex', '0');
 
     this._toolbar = document.createElement('div');
@@ -533,11 +540,6 @@ class DAGEditor {
   _onDblClick(e) {
     const gp = this._clientToGraph(e.clientX, e.clientY);
 
-    // Node: rename
-    for (const node of this._nodes.values()) {
-      if (this._nodeHitTest(node, gp.x, gp.y)) { this._startRename(node.id); return; }
-    }
-
     // Edge: insert a new node at the click point and splice it in
     for (const edge of this._edges.values()) {
       if (!this._edgeHitTest(edge, gp.x, gp.y)) continue;
@@ -591,9 +593,6 @@ class DAGEditor {
         }
         break;
       case 'Tab': e.preventDefault(); this._selectNextNode(e.shiftKey ? -1 : 1); break;
-      case 'Enter':
-        if (this._selected?.kind === 'node') this._startRename(this._selected.id);
-        break;
     }
   }
 
@@ -829,8 +828,14 @@ class DAGEditor {
   }
 
   _setSelected(kind, id) {
+    const prev     = this._selected;
+    const prevNode = prev?.kind === 'node' ? this._nodes.get(prev.id) : null;
     this._selected = kind ? { kind, id } : null;
     this._render();
+    // A node stops being selected when selection moves elsewhere or is cleared
+    if (prevNode && !(kind === 'node' && id === prev.id)) {
+      this._onChange({ type: 'deselected', node: prevNode });
+    }
     if (kind === 'node') {
       const node = this._nodes.get(id);
       if (node) this._onChange({ type: 'selected', node });
@@ -843,40 +848,6 @@ class DAGEditor {
     const cur = this._selected?.kind === 'node' ? this._selected.id : null;
     const idx = cur ? ids.indexOf(cur) : -1;
     this._setSelected('node', ids[(idx + dir + ids.length) % ids.length]);
-  }
-
-  /* ─────────────────── inline rename ─────────────────── */
-  _startRename(nodeId) {
-    const node = this._nodes.get(nodeId);
-    if (!node) return;
-    const sp = this._graphToSVG(node.x, node.y);
-    const w  = DAGEditor._NODE_W * this._scale;
-
-    const inp = document.createElement('input');
-    inp.className     = 'dag-rename-input';
-    inp.value         = node.label;
-    inp.style.left    = sp.x + 'px';
-    inp.style.top     = sp.y + 'px';
-    inp.style.width   = w + 'px';
-    inp.style.height  = Math.max(28, 20 * this._scale) + 'px';
-    inp.style.fontSize = Math.max(11, 13 * this._scale) + 'px';
-    this._container.appendChild(inp);
-    inp.select();
-
-    const finish = () => {
-      const v = inp.value.trim();
-      if (v) node.label = v;
-      inp.remove();
-      this._snapshot(); this._render();
-      this._onChange({ type: 'selected', node });
-    };
-    inp.addEventListener('blur', finish);
-    inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter')  { e.preventDefault(); inp.blur(); }
-      if (e.key === 'Escape') { inp.value = node.label; inp.blur(); }
-      e.stopPropagation();
-    });
-    inp.focus();
   }
 
   /* ─────────────────── fit view ─────────────────── */
@@ -900,9 +871,16 @@ class DAGEditor {
   }
 
   /* ─────────────────── undo / redo ─────────────────── */
-  _snapshot() {
-    this._undoStack.push(this._serialise());
-    if (this._undoStack.length > 100) this._undoStack.shift();
+  _snapshot(coalesceKey = null) {
+    const snap = this._serialise();
+    if (coalesceKey && coalesceKey === this._lastSnapKey && this._undoStack.length > 1) {
+      // Same field edited again (e.g. typing in a label): fold into one undo step
+      this._undoStack[this._undoStack.length - 1] = snap;
+    } else {
+      this._undoStack.push(snap);
+      if (this._undoStack.length > 100) this._undoStack.shift();
+    }
+    this._lastSnapKey = coalesceKey;
     this._redoStack = [];
   }
 
@@ -917,6 +895,7 @@ class DAGEditor {
 
   _restore(snap) {
     const s = JSON.parse(snap);
+    this._setSelected(null, null);   // while the old nodes still exist, so listeners hear 'deselected'
     this._nodes.clear(); this._edges.clear();
     s.nodes.forEach(n => this._nodes.set(n.id, DAGNode.fromJSON(n)));
     s.edges.forEach(e => this._edges.set(e.id, DAGEdge.fromJSON(e)));
@@ -925,15 +904,18 @@ class DAGEditor {
   }
 
   undo() {
-    if (!this._undoStack.length) return;
-    this._redoStack.push(this._serialise());
-    this._restore(this._undoStack.pop());
+    if (this._undoStack.length < 2) return;          // index 0 is the baseline
+    this._redoStack.push(this._undoStack.pop());
+    this._lastSnapKey = null;
+    this._restore(this._undoStack[this._undoStack.length - 1]);
   }
 
   redo() {
     if (!this._redoStack.length) return;
-    this._undoStack.push(this._serialise());
-    this._restore(this._redoStack.pop());
+    const snap = this._redoStack.pop();
+    this._undoStack.push(snap);
+    this._lastSnapKey = null;
+    this._restore(snap);
   }
 
   _resetHint() {
@@ -1368,6 +1350,7 @@ class DAGEditor {
    * Accepts both schema v1 (legacy) and v2.
    */
   loadGraph(data) {
+    this._setSelected(null, null);
     this._nodes.clear(); this._edges.clear();
     this._nodeSeq = 0; this._edgeSeq = 0;
     const version = data.version ?? 1;
@@ -1445,6 +1428,113 @@ class DAGEditor {
     try { data = JSON.parse(json); }
     catch (e) { throw new Error(`DAGEditor.importJSON: invalid JSON — ${e.message}`); }
     return this.fromJSON(data);
+  }
+
+  /* ─────────────────── node and port editing ─────────────────── */
+
+  _portList(node, direction) {
+    if (direction === 'input')  return node.inputs;
+    if (direction === 'output') return node.outputs;
+    throw new Error(`DAGEditor: direction must be 'input' or 'output', got '${direction}'`);
+  }
+
+  _uniquePortId(node, direction) {
+    const base = direction === 'input' ? 'in' : 'out';
+    const used = new Set(this._portList(node, direction).map(p => p.id));
+    if (!used.has(base)) return base;
+    let n = 2;
+    while (used.has(`${base}${n}`)) n++;
+    return `${base}${n}`;
+  }
+
+  /**
+   * Set a node's label. Fires { type:'updated', node }.
+   * Repeated edits of the same label share one undo step.
+   * @returns {boolean} false if the node does not exist
+   */
+  setNodeLabel(nodeId, label) {
+    const node = this._nodes.get(nodeId);
+    if (!node) return false;
+    label = String(label);
+    if (node.label === label) return true;
+    node.label = label;
+    this._snapshot(`label:${nodeId}`);
+    this._render();
+    this._onChange({ type: 'updated', node });
+    return true;
+  }
+
+  /**
+   * Add a port to a node. Fires { type:'updated', node }.
+   * @param {string} nodeId
+   * @param {'input'|'output'} direction
+   * @param {{id?:string, label?:string}} [opts] id defaults to a unique 'in'/'out' name
+   * @returns {{id:string,label:string}|null} the port, or null if the node is unknown
+   *          or the requested id is already used on that side
+   */
+  addPort(nodeId, direction, opts = {}) {
+    const node = this._nodes.get(nodeId);
+    if (!node) return null;
+    const list = this._portList(node, direction);
+    const id   = opts.id ?? this._uniquePortId(node, direction);
+    if (list.some(p => p.id === id)) return null;
+    const port = { id, label: opts.label ?? '' };
+    list.push(port);
+    this._snapshot();
+    this._render();
+    this._onChange({ type: 'updated', node });
+    return port;
+  }
+
+  /**
+   * Remove a port, along with every edge attached to it.
+   * Fires 'edge-deleted' for each removed edge, then { type:'updated', node }.
+   * @returns {boolean} false if the node or port does not exist
+   */
+  removePort(nodeId, direction, portId) {
+    const node = this._nodes.get(nodeId);
+    if (!node) return false;
+    const list = this._portList(node, direction);
+    const idx  = list.findIndex(p => p.id === portId);
+    if (idx < 0) return false;
+
+    const removed = [];
+    for (const [eid, e] of this._edges) {
+      const attached = direction === 'output'
+        ? e.fromNodeId === nodeId && e.fromPortId === portId
+        : e.toNodeId   === nodeId && e.toPortId   === portId;
+      if (attached) { removed.push(e); this._edges.delete(eid); }
+    }
+    list.splice(idx, 1);
+
+    if (this._selected?.kind === 'edge' && removed.some(e => e.id === this._selected.id)) {
+      this._setSelected(null, null);
+    }
+    this._snapshot();
+    this._render();
+    for (const e of removed) this._onChange({ type: 'edge-deleted', edge: e });
+    this._onChange({ type: 'updated', node });
+    if (removed.length) this._triggerPinnedLayout();
+    return true;
+  }
+
+  /**
+   * Set a port's label. Fires { type:'updated', node }.
+   * Repeated edits of the same label share one undo step.
+   * @returns {boolean} false if the node or port does not exist
+   */
+  setPortLabel(nodeId, direction, portId, label) {
+    const node = this._nodes.get(nodeId);
+    if (!node) return false;
+    const port = this._portList(node, direction).find(p => p.id === portId);
+    if (!port) return false;
+    label = String(label);
+    if (port.label === label) return true;
+    port.label = label;
+    this._snapshot(`plabel:${nodeId}:${direction}:${portId}`);
+    this._render();
+    this._onChange({ type: 'updated', node });
+    return true;
   }
 
   /** Remove the editor and clean up. */

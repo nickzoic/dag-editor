@@ -256,19 +256,3 @@
   0%, 100% { box-shadow: 0 0 6px rgba(46,232,192,.3); }
   50%       { box-shadow: 0 0 16px rgba(46,232,192,.65); }
 }
-
-/* Rename input */
-.dag-rename-input {
-  position: absolute;
-  box-sizing: border-box;
-  padding: 0 10px;
-  background: #12192e;
-  border: 2px solid var(--dag-node-sel);
-  border-radius: 10px;
-  color: #e8ecff;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 13px;
-  text-align: center;
-  outline: none;
-  z-index: 20;
-}
