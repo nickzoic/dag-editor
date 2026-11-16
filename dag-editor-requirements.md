@@ -11,7 +11,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - Each node has a unique string ID, a display label, a position (x, y), and zero or more named input ports and zero or more named output ports.
 - Each port has a unique-within-node ID and an optional display label.
 - Node labels must be unique across all nodes. When a node is created without an explicit label, generate a name that does not already exist in the graph (e.g. "Node", "Node 2", "Node 3", …). Labels the user later types in are not forced to be unique.
-- A node with zero or one input port and zero or one output port is a **compact** node.
+- A node is **compact** if it has at most one input port and at most one output port, **or** if every port on both sides has a label of length 0 or 1. Any other node is **expanded**. A node can therefore have any number of ports on a side and stay compact, provided all its port labels are that short.
 
 ### 1.2 Edges
 
@@ -36,8 +36,10 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 ### 2.2 Nodes
 
 - Nodes are rounded rectangles. Output ports are on the right edge; input ports are on the left edge.
-- **Compact nodes** (≤1 input, ≤1 output): the node is short and the label is vertically centred. Port dots sit at the vertical midpoint of the node. Port labels are hidden unless the port has a non-empty label, in which case the label is shown next to the port dot.
-- **Expanded nodes** (2+ inputs or 2+ outputs): the node is taller. The label sits at the top with a horizontal divider below it. Ports are evenly spaced below the divider. Each port has its label shown inside the node body next to the dot.
+- **Compact nodes** (see §1.1): there is no header or divider. The label is vertically centred. The ports on each side form a stack, evenly spaced and centred on the node (a lone port sits at the vertical midpoint). The node is tall enough to hold its tallest stack. Port labels are shown next to the port dot when non-empty (at most one character, except on nodes with a single port per side, which may have longer labels).
+- **Expanded nodes**: the label sits at the top with a horizontal divider below it. Ports are evenly spaced below the divider, and each port has its label shown inside the node body next to the dot.
+- **Label wrapping** (both layouts): a long node label wraps onto several lines at word boundaries, and a single word wider than a line is broken across lines. Labels are never truncated. The node grows taller to fit every line — in a compact node the label block stays centred, in an expanded node the header, divider and ports move down. Runs of whitespace in a label collapse when displayed.
+- Node height, port positions, hit-testing and edge endpoints always follow the node's actual height.
 - Port dots are always visible with a dim border. When the cursor is over a node, the port borders brighten. When the cursor is directly over a port dot, the dot fills solid.
 - An unselected node gets a brightened outline and a subtle glow when hovered.
 - A selected node renders in a distinct colour scheme (teal fill and teal border) clearly different from both the resting and hovered states. Its port dots also use the teal colour.
@@ -141,7 +143,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 - Nodes are sorted into **strata** (columns) by their longest-path depth from any root (stratum 0 = roots). Each stratum occupies a distinct horizontal band. Roots are on the left, leaves on the right.
 - Within each stratum, nodes are sorted vertically to minimise edge crossings (barycentric heuristic: sort by mean Y of neighbours in adjacent strata).
-- Within each stratum, nodes are evenly spaced vertically.
+- Within each stratum, nodes are evenly spaced vertically, with a gap that allows for the tallest node in that stratum, so nodes made tall by wrapped labels or many ports do not overlap.
 - Nodes avoid overlapping edges that pass through them. If overlap is unavoidable, edges are drawn on top of nodes so they remain visible.
 - Edges tend toward horizontal alignment (connected nodes are gently pulled toward the same Y).
 - Cross-stratum nodes repel each other to avoid column overlap.
@@ -237,7 +239,7 @@ All valid node and edge operations fire the appropriate `onChange` events.
 - `direction` is `'input'` or `'output'`; anything else is an error.
 - `addPort` generates an id unique within that side of the node (`in`, `in2`, … / `out`, `out2`, …) unless one is given; it returns `null` if the node is unknown or the given id is already used on that side. New ports have an empty label unless given one.
 - `removePort` removes the port **and every edge attached to it**; if the selected edge is one of them, the selection is cleared. Returns `false` for an unknown node or port.
-- Adding or removing ports changes the node's layout class immediately: a node with ≤1 input and ≤1 output is compact, otherwise expanded.
+- Adding or removing a port, or changing a port label, can switch a node between compact and expanded (§1.1); the change is visible immediately. Changing a node label re-wraps it and resizes the node.
 - A pinned auto-layout re-runs when removing a port deletes edges, but not for label changes or for adding a port.
 - Each operation is one undo step (except repeated edits of one label, see §7).
 
