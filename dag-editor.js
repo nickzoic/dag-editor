@@ -114,6 +114,7 @@ class DAGEditor {
     this._undoStack = [];        // snapshots; index 0 is the baseline (initial state)
     this._redoStack = [];
     this._lastSnapKey = null;    // lets repeated edits of one field share an undo step
+    this._lineCache   = new Map();   // node id → { label, maxW, lines }  (wrapped label text)
 
     this._layoutActive    = false;
     this._layoutPinned    = false;   // double-click mode: re-layout on every graph change
@@ -136,39 +137,108 @@ class DAGEditor {
   static _PORT_R        = 6;    // port circle radius
   static _PORT_HIT_R    = 12;   // hit-test radius
   static _NODE_RX       = 8;
+  static _LINE_H        = 16;   // line height of the node label
+  static _LABEL_W_COMPACT  = 98;    // label wrap width, compact nodes (leaves room for 1-char port labels)
+  static _LABEL_W_EXPANDED = 120;   // label wrap width, expanded nodes (label sits in its own header)
 
-  /* Compact layout: ≤1 input AND ≤1 output — no port area, ports at mid-height */
-  _isCompact(node) {
-    return node.inputs.length <= 1 && node.outputs.length <= 1;
+  /* A port label is "short" if it has 0 or 1 characters (a surrogate pair counts as one). */
+  static _isShortLabel(s) {
+    return s.length <= 1 || (s.length === 2 && s.codePointAt(0) > 0xFFFF);
   }
 
-  /* Dynamic node height */
+  /* Compact layout: no header/divider; label centred, ports stacked at mid-height.
+   * A node is compact if it has at most one port on each side, OR if every port
+   * on both sides has a label of length 0 or 1 (so many short-labelled ports still fit). */
+  _isCompact(node) {
+    if (node.inputs.length <= 1 && node.outputs.length <= 1) return true;
+    return node.inputs.every(p => DAGEditor._isShortLabel(p.label)) &&
+           node.outputs.every(p => DAGEditor._isShortLabel(p.label));
+  }
+
+  /* ── node label wrapping ── */
+
+  /* Rendered width of a string in the node-label font; estimated when it cannot be measured. */
+  _textWidth(str) {
+    const el = this._measureEl;
+    if (el && typeof el.getComputedTextLength === 'function') {
+      el.textContent = str;
+      const w = el.getComputedTextLength();
+      if (w > 0) return w;
+    }
+    return str.length * 7.2;
+  }
+
+  /* Greedy word wrap to maxW. A word wider than a whole line is split into line-sized pieces. */
+  _wrapLabel(text, maxW) {
+    const words = String(text).split(/\s+/).filter(Boolean);
+    if (!words.length) return [''];
+    const lines = [];
+    let line = '';
+    for (let word of words) {
+      while (word.length > 1 && this._textWidth(word) > maxW) {
+        let n = word.length - 1;
+        while (n > 1 && this._textWidth(word.slice(0, n)) > maxW) n--;
+        if (line) { lines.push(line); line = ''; }
+        lines.push(word.slice(0, n));
+        word = word.slice(n);
+      }
+      const candidate = line ? `${line} ${word}` : word;
+      if (!line || this._textWidth(candidate) <= maxW) line = candidate;
+      else { lines.push(line); line = word; }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  /* Wrapped lines of a node's label (cached until the label or layout class changes). */
+  _labelLines(node) {
+    const maxW = this._isCompact(node) ? DAGEditor._LABEL_W_COMPACT : DAGEditor._LABEL_W_EXPANDED;
+    let c = this._lineCache.get(node.id);
+    if (!c || c.label !== node.label || c.maxW !== maxW) {
+      c = { label: node.label, maxW, lines: this._wrapLabel(node.label, maxW) };
+      this._lineCache.set(node.id, c);
+    }
+    return c.lines;
+  }
+
+  /* Expanded nodes: height of the header (label block) above the ports. */
+  _headerHeight(node) {
+    return DAGEditor._PORT_TOP + (this._labelLines(node).length - 1) * DAGEditor._LINE_H;
+  }
+
+  /* Dynamic node height: grows to fit the wrapped label and the ports. */
   _nodeHeight(node) {
-    if (this._isCompact(node)) return DAGEditor._NODE_MIN_H;
+    const PP    = DAGEditor._PORT_PITCH;
     const ports = Math.max(node.inputs.length, node.outputs.length);
-    return DAGEditor._PORT_TOP + ports * DAGEditor._PORT_PITCH + 8;
+    if (this._isCompact(node)) {
+      const labelH = this._labelLines(node).length * DAGEditor._LINE_H + 30;
+      return Math.max(DAGEditor._NODE_MIN_H, labelH, ports * PP + 16);
+    }
+    return this._headerHeight(node) + ports * PP + 8;
+  }
+
+  /* y of port number idx, relative to the node's top. Compact: a stack centred on the node. */
+  _portLocalY(node, direction, idx) {
+    const PP = DAGEditor._PORT_PITCH;
+    if (this._isCompact(node)) {
+      const n = direction === 'input' ? node.inputs.length : node.outputs.length;
+      return this._nodeHeight(node) / 2 + (idx - (n - 1) / 2) * PP;
+    }
+    return this._headerHeight(node) + idx * PP + PP / 2;
   }
 
   /* Position of a specific output port in graph coords */
   _outputPortPos(node, portId) {
     const idx = node.outputs.findIndex(p => p.id === portId);
     if (idx < 0) return null;
-    const H = this._nodeHeight(node);
-    const y = this._isCompact(node)
-      ? node.y + H / 2
-      : node.y + DAGEditor._PORT_TOP + idx * DAGEditor._PORT_PITCH + DAGEditor._PORT_PITCH / 2;
-    return { x: node.x + DAGEditor._NODE_W, y };
+    return { x: node.x + DAGEditor._NODE_W, y: node.y + this._portLocalY(node, 'output', idx) };
   }
 
   /* Position of a specific input port in graph coords */
   _inputPortPos(node, portId) {
     const idx = node.inputs.findIndex(p => p.id === portId);
     if (idx < 0) return null;
-    const H = this._nodeHeight(node);
-    const y = this._isCompact(node)
-      ? node.y + H / 2
-      : node.y + DAGEditor._PORT_TOP + idx * DAGEditor._PORT_PITCH + DAGEditor._PORT_PITCH / 2;
-    return { x: node.x, y };
+    return { x: node.x, y: node.y + this._portLocalY(node, 'input', idx) };
   }
 
   /* First output / input port positions */
@@ -232,6 +302,14 @@ class DAGEditor {
         <polygon points="0 0, 8 3, 0 6" fill="var(--dag-draft)"/>
       </marker>
     </defs>`;
+
+    // Hidden text used to measure label widths for wrapping (same class => same font)
+    this._measureEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    this._measureEl.setAttribute('class', 'dag-node-label');
+    this._measureEl.setAttribute('visibility', 'hidden');
+    this._measureEl.setAttribute('x', 0);
+    this._measureEl.setAttribute('y', 0);
+    this._svg.appendChild(this._measureEl);
 
     this._gEdges   = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     this._gNodes   = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -955,8 +1033,12 @@ class DAGEditor {
     const W  = DAGEditor._NODE_W;
     const RX = DAGEditor._NODE_RX;
     const PR = DAGEditor._PORT_R;
-    const PT = DAGEditor._PORT_TOP;
-    const PP = DAGEditor._PORT_PITCH;
+    const LH = DAGEditor._LINE_H;
+    const SVGNS = 'http://www.w3.org/2000/svg';
+
+    for (const id of [...this._lineCache.keys()]) {
+      if (!this._nodes.has(id)) this._lineCache.delete(id);
+    }
 
     for (const node of this._nodes.values()) {
       const H       = this._nodeHeight(node);
@@ -983,18 +1065,31 @@ class DAGEditor {
       }
       rect.setAttribute('width', W); rect.setAttribute('height', H);
 
-      // label — centred vertically in compact mode, top-aligned otherwise
+      // label — wrapped onto several lines; the block is centred vertically in compact
+      // mode and starts at the top (above the divider) in expanded mode
       let labelEl = g.querySelector('text.dag-node-label');
       if (!labelEl) {
-        labelEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        labelEl = document.createElementNS(SVGNS, 'text');
         labelEl.setAttribute('class', 'dag-node-label');
         labelEl.setAttribute('dominant-baseline', 'middle');
         labelEl.setAttribute('text-anchor', 'middle');
-        labelEl.setAttribute('x', W / 2);
         g.appendChild(labelEl);
       }
-      labelEl.setAttribute('y', compact ? H / 2 : 18);
-      labelEl.textContent = this._truncate(node.label, 16);
+      const lines  = this._labelLines(node);
+      const firstY = compact ? H / 2 - (lines.length - 1) * LH / 2 : 18;
+      const lkey   = lines.join('\n');
+      if (labelEl.dataset.lines !== lkey) {
+        labelEl.replaceChildren();
+        for (const line of lines) {
+          const t = document.createElementNS(SVGNS, 'tspan');
+          t.setAttribute('x', W / 2);
+          t.setAttribute('dominant-baseline', 'middle');
+          t.textContent = line;
+          labelEl.appendChild(t);
+        }
+        labelEl.dataset.lines = lkey;
+      }
+      [...labelEl.children].forEach((t, i) => t.setAttribute('y', firstY + i * LH));
 
       // divider — only in expanded mode
       let divider = g.querySelector('line.dag-node-divider');
@@ -1004,8 +1099,9 @@ class DAGEditor {
           divider.setAttribute('class', 'dag-node-divider');
           g.appendChild(divider);
         }
-        divider.setAttribute('x1', 0); divider.setAttribute('y1', PT - 6);
-        divider.setAttribute('x2', W); divider.setAttribute('y2', PT - 6);
+        const dy = this._headerHeight(node) - 6;
+        divider.setAttribute('x1', 0); divider.setAttribute('y1', dy);
+        divider.setAttribute('x2', W); divider.setAttribute('y2', dy);
         divider.style.display = '';
       } else if (divider) {
         divider.style.display = 'none';
@@ -1030,7 +1126,6 @@ class DAGEditor {
         circle.setAttribute('cx', cx); circle.setAttribute('cy', cy);
 
         // port label: shown in expanded mode always; in compact mode only if non-empty.
-        // In compact mode the label is placed outside the node body to avoid crowding.
         const lid        = `label:${pid}`;
         const hasLabel   = !!(port.label);
         const showLabel  = !compact || hasLabel;
@@ -1044,15 +1139,9 @@ class DAGEditor {
             lbl.setAttribute('dominant-baseline', 'middle');
             g.appendChild(lbl);
           }
-          if (compact) {
-            // Outside the node: input labels to the right of the port dot,
-            // output labels to the left of the port dot.
-            lbl.setAttribute('text-anchor', dir === 'in' ? 'start' : 'end');
-            lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
-          } else {
-            lbl.setAttribute('text-anchor', dir === 'in' ? 'start' : 'end');
-            lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
-          }
+          // Inside the node body: input labels right of the port dot, output labels left of it
+          lbl.setAttribute('text-anchor', dir === 'in' ? 'start' : 'end');
+          lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
           lbl.setAttribute('y', cy);
           lbl.textContent = port.label || '';
           lbl.style.display = '';
@@ -1062,13 +1151,11 @@ class DAGEditor {
       };
 
       node.inputs.forEach((port, i) => {
-        const cy = compact ? H / 2 : PT + i * PP + PP / 2;
-        addPort(port, 'in', 0, cy);
+        addPort(port, 'in', 0, this._portLocalY(node, 'input', i));
       });
 
       node.outputs.forEach((port, i) => {
-        const cy = compact ? H / 2 : PT + i * PP + PP / 2;
-        addPort(port, 'out', W, cy);
+        addPort(port, 'out', W, this._portLocalY(node, 'output', i));
       });
 
       // remove orphaned port elements
@@ -1077,8 +1164,6 @@ class DAGEditor {
       }
     }
   }
-
-  _truncate(s, max) { return s.length > max ? s.slice(0, max - 1) + '…' : s; }
 
   /* ─────────────────── auto-layout ─────────────────── */
   _computeStrata() {
@@ -1179,10 +1264,11 @@ class DAGEditor {
       if (!byStratum.has(s)) byStratum.set(s, []);
       byStratum.get(s).push(id);
     }
-    const SLOT_GAP = DAGEditor._NODE_MIN_H + PAD_Y * 2.5;
     const SLOT_STR = 0.20;
     for (const [, members] of byStratum) {
       if (members.length < 2) continue;
+      // Slot spacing allows for the tallest node in the stratum (wrapped labels, many ports)
+      const SLOT_GAP = Math.max(...members.map(id => this._nodeHeight(this._nodes.get(id)))) + PAD_Y * 2.5;
       const weight = id => {
         const node  = this._nodes.get(id);
         const cross = (neighbours.get(id) ?? []).filter(nid => (stratum.get(nid) ?? 0) !== (stratum.get(id) ?? 0));
@@ -1478,7 +1564,7 @@ class DAGEditor {
     const list = this._portList(node, direction);
     const id   = opts.id ?? this._uniquePortId(node, direction);
     if (list.some(p => p.id === id)) return null;
-    const port = { id, label: opts.label ?? '' };
+    const port = { id, label: String(opts.label ?? '') };
     list.push(port);
     this._snapshot();
     this._render();

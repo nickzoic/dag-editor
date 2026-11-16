@@ -36,7 +36,9 @@ Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.c
 
 Each node has zero or more named **input ports** (left side) and zero or more named **output ports** (right side). Ports have an `id` and an optional `label`.
 
-A node with ≤ 1 input and ≤ 1 output renders in a compact single-row layout. Nodes with more ports expand vertically and show port labels inside the body.
+A node renders in a **compact** layout — no header, label centred, ports stacked down the sides — if it has at most one input and one output, **or** if every port label on both sides is empty or a single character (so a node can have many short-labelled ports and stay compact). Otherwise it **expands**: the label gets its own header above a divider, and each port shows its full label inside the body.
+
+Long node labels wrap onto several lines (words wider than a line are broken), and the node grows taller to fit.
 
 ```js
 // Create a node with custom ports
