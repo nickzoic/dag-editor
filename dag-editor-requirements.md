@@ -347,8 +347,10 @@ The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as 
 
 - The X and Y axes are swapped: **inputs are on the top edge** of each node, **outputs on the bottom edge**, and the **strata run from top to bottom**. Edges leave an output heading down and arrive at an input heading down, using the same curve rules as unflipped (including the 45° rule for edges that run more sideways than down), with arrowheads on the input end.
 - **Relative positions are kept**: each node's centre is transposed, so a node near the top of the pane when horizontal is near the left of the pane when vertical.
-- Ports that line up in the unflipped layout still line up when flipped (a port's position across the node is its unflipped offset from the node's centre).
-- Text is never mirrored. Node labels stay upright and wrap as usual. Port labels on a compact node (one character) stay upright beside their port; on a non-compact node they are turned to run along the node, starting at the port and reading into the body. Expanded nodes have a divider between the label and each port-label zone. Flipped nodes are at least 120 px wide and grow to fit their ports.
+- Ports that line up in the unflipped layout still line up when flipped, except where a node's ports have to be spread out to fit their labels (see below): a port's position across the node is otherwise its unflipped offset from the node's centre.
+- **All text stays upright**; nothing is rotated or mirrored. Node labels wrap as usual. Each port label sits just inside the edge, centred under (inputs) or over (outputs) its port.
+- **Ports are spaced to fit their labels.** On each side of a node the ports are evenly spaced, at least 22 px apart and at least as far apart as the widest label on that side plus a small gap; the node is widened if needed so every port and its label stay within it. The two sides are spaced independently. (Port labels are short and nodes rarely have more than a few ports, so this seldom needs more than the usual 22 px.) A group of ports stays centred where its unflipped counterpart was.
+- Expanded nodes have a divider between the label and each port-label row. Flipped nodes are at least 120 px wide.
 - The compact / expanded rule is unchanged.
 
 ### 13.3 Positions and export

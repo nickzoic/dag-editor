@@ -299,37 +299,41 @@ class DAGEditor {
   }
 
   /* ── Flipped geometry ──────────────────────────────────────────────────────
-   * Flipped, a node has its inputs along the top edge and its outputs along the bottom edge.
-   * Port x positions are the unflipped port y offsets measured from the node's centre, so ports
-   * that line up in the model still line up on screen. The label stays upright. A long port
-   * label would run into its neighbours if laid across a 22 px pitch, so on non-compact nodes
-   * it is turned to run along the node (compact nodes only have 1-character labels). */
+   * Flipped, a node has its inputs along the top edge and its outputs along the bottom edge. Each
+   * port label sits upright just inside the edge, under (or over) its port, so the ports on a side
+   * are spaced far enough apart for the widest label there. Port labels are short and a node rarely
+   * has more than a few ports, so this seldom needs more than the usual 22 px. Where it doesn't, a
+   * port's position across the node is its unflipped offset from the node's centre, so ports that
+   * line up in the model still line up on screen. */
   _flipGeom(node) {
     const sig = JSON.stringify([node.label, node.inputs.map(p => p.label), node.outputs.map(p => p.label)]);
     const hit = this._flipCache.get(node.id);
     if (hit && hit.sig === sig) return hit.g;
 
-    const PR = DAGEditor._PORT_R, LH = DAGEditor._LINE_H;
+    const PR = DAGEditor._PORT_R, PP = DAGEditor._PORT_PITCH, LH = DAGEditor._LINE_H;
     const compact = this._isCompact(node);
     const hu      = this._nodeHeight(node);
     const lines   = this._labelLines(node, true);
-    const inOff   = node.inputs.map((_, i)  => this._portLocalY(node, 'input',  i) - hu / 2);
-    const outOff  = node.outputs.map((_, i) => this._portLocalY(node, 'output', i) - hu / 2);
-    const half    = Math.max(0, ...inOff.map(Math.abs), ...outOff.map(Math.abs));
-    const w       = Math.max(DAGEditor._FLIP_W, 2 * (half + PR + 8));
 
-    // room above / below the label for the port labels (and the port dots, half of which stick out)
-    const zone = ports => {
-      const labels = ports.map(p => p.label).filter(Boolean);
-      if (!labels.length) return 8;
-      if (compact) return 20;
-      return Math.max(20, Math.max(...labels.map(l => this._portTextWidth(l))) + 18);
+    // One side: where its ports go along the edge, and how much room its labels need.
+    const side = (ports, direction) => {
+      const widest = Math.max(0, ...ports.map(p => p.label ? this._portTextWidth(p.label) : 0));
+      const pitch  = Math.max(PP, widest + 10);                          // room for the widest label
+      const mean   = ports.length
+        ? ports.reduce((sum, _, i) => sum + this._portLocalY(node, direction, i), 0) / ports.length
+        : hu / 2;
+      const centre = mean - hu / 2;                                      // where the group sits, unflipped
+      return { widest, zone: widest ? 22 : 8,                            // zone: label row + the dot's overhang
+               offs: ports.map((_, i) => centre + (i - (ports.length - 1) / 2) * pitch) };
     };
-    const top = zone(node.inputs), bottom = zone(node.outputs);
-    const h   = Math.max(DAGEditor._NODE_MIN_H, top + lines.length * LH + 12 + bottom);
+    const top = side(node.inputs, 'input'), bottom = side(node.outputs, 'output');
+    const reach  = Math.max(0, ...top.offs.map(Math.abs), ...bottom.offs.map(Math.abs));
+    const margin = Math.max(PR + 8, Math.max(top.widest, bottom.widest) / 2 + 6);   // keep end labels inside
+    const w = Math.max(DAGEditor._FLIP_W, 2 * (reach + margin));
+    const h = Math.max(DAGEditor._NODE_MIN_H, top.zone + lines.length * LH + 12 + bottom.zone);
 
-    const g = { w, h, top, bottom, compact,
-                inX: inOff.map(o => w / 2 + o), outX: outOff.map(o => w / 2 + o) };
+    const g = { w, h, top: top.zone, bottom: bottom.zone, compact,
+                inX: top.offs.map(o => w / 2 + o), outX: bottom.offs.map(o => w / 2 + o) };
     this._flipCache.set(node.id, { sig, g });
     return g;
   }
@@ -1353,19 +1357,12 @@ class DAGEditor {
             lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
             lbl.setAttribute('y', cy);
             lbl.removeAttribute('transform');
-          } else if (compact) {
-            // a single character just inside the edge, level with its dot's column
+          } else {
+            // upright, just inside the edge, under (or over) its port
             lbl.setAttribute('text-anchor', 'middle');
             lbl.setAttribute('x', cx);
             lbl.setAttribute('y', dir === 'in' ? 14 : H - 14);
             lbl.removeAttribute('transform');
-          } else {
-            // turned to run along the node, starting at the dot and reading into the body
-            const ly = dir === 'in' ? 12 : H - 12;
-            lbl.setAttribute('text-anchor', dir === 'in' ? 'end' : 'start');
-            lbl.setAttribute('x', cx);
-            lbl.setAttribute('y', ly);
-            lbl.setAttribute('transform', `rotate(-90 ${cx} ${ly})`);
           }
           lbl.textContent = port.label || '';
           lbl.style.display = '';
