@@ -256,6 +256,15 @@ npm run test:unit -- --test-name-pattern="flip"      # tests whose names match
 node --test test/unit/layout.test.js                 # one file
 ```
 
+Or, to install npm and chromium and run tests in a docker container.
+The default is to run all tests, or pass one of the commands above:
+
+```sh
+./run_tests_in_docker.sh
+
+./run_tests_in_docker.sh npm run test:unit
+```
+
 ### What is tested
 
 * **Unit tests** (`test/unit/`) load `dag-editor.js` into [jsdom](https://github.com/jsdom/jsdom) and exercise the whole API: building graphs and the rules that keep them valid (no self-loops, duplicates or cycles), deleting with edge bridging, port editing, undo and redo, import and export (including version 1 graphs), node sizing and label wrapping, counting user-perceived characters (with and without `Intl.Segmenter`), edge curves, auto-layout, orientation and resizing, and the mouse and keyboard handlers. They also apply long **random sequences of edits** and lay out random graphs, checking after every step that the graph is still a valid DAG, that what is drawn matches the model, that nothing overlaps in either orientation, and that a layout is repeatable.
