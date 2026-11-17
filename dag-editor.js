@@ -299,41 +299,34 @@ class DAGEditor {
   }
 
   /* ── Flipped geometry ──────────────────────────────────────────────────────
-   * Flipped, a node has its inputs along the top edge and its outputs along the bottom edge. Each
-   * port label sits upright just inside the edge, under (or over) its port, so the ports on a side
-   * are spaced far enough apart for the widest label there. Port labels are short and a node rarely
-   * has more than a few ports, so this seldom needs more than the usual 22 px. Where it doesn't, a
-   * port's position across the node is its unflipped offset from the node's centre, so ports that
-   * line up in the model still line up on screen. */
+   * Flipped, a node has its inputs along the top edge and its outputs along the bottom edge. The n
+   * ports on a side are evenly spread across the node's width, at 1/(n+1), 2/(n+1) … n/(n+1) of it
+   * (one port in the middle, two at thirds, three at quarters), whatever their labels. Each label
+   * sits upright just inside the edge, under (or over) its port, so the node is made wide enough
+   * that the widest label on a side fits in that side's spacing (labels are short and nodes rarely
+   * have more than a few ports, so the usual minimum width is normally enough). */
   _flipGeom(node) {
     const sig = JSON.stringify([node.label, node.inputs.map(p => p.label), node.outputs.map(p => p.label)]);
     const hit = this._flipCache.get(node.id);
     if (hit && hit.sig === sig) return hit.g;
 
-    const PR = DAGEditor._PORT_R, PP = DAGEditor._PORT_PITCH, LH = DAGEditor._LINE_H;
+    const PP = DAGEditor._PORT_PITCH, LH = DAGEditor._LINE_H;
     const compact = this._isCompact(node);
-    const hu      = this._nodeHeight(node);
     const lines   = this._labelLines(node, true);
 
-    // One side: where its ports go along the edge, and how much room its labels need.
-    const side = (ports, direction) => {
+    // Least width this side needs: n+1 gaps, each at least 22 px and wide enough for the widest label.
+    const need = ports => {
       const widest = Math.max(0, ...ports.map(p => p.label ? this._portTextWidth(p.label) : 0));
-      const pitch  = Math.max(PP, widest + 10);                          // room for the widest label
-      const mean   = ports.length
-        ? ports.reduce((sum, _, i) => sum + this._portLocalY(node, direction, i), 0) / ports.length
-        : hu / 2;
-      const centre = mean - hu / 2;                                      // where the group sits, unflipped
-      return { widest, zone: widest ? 22 : 8,                            // zone: label row + the dot's overhang
-               offs: ports.map((_, i) => centre + (i - (ports.length - 1) / 2) * pitch) };
+      return { widest, width: (ports.length + 1) * Math.max(PP, widest + 10) };
     };
-    const top = side(node.inputs, 'input'), bottom = side(node.outputs, 'output');
-    const reach  = Math.max(0, ...top.offs.map(Math.abs), ...bottom.offs.map(Math.abs));
-    const margin = Math.max(PR + 8, Math.max(top.widest, bottom.widest) / 2 + 6);   // keep end labels inside
-    const w = Math.max(DAGEditor._FLIP_W, 2 * (reach + margin));
-    const h = Math.max(DAGEditor._NODE_MIN_H, top.zone + lines.length * LH + 12 + bottom.zone);
+    const top = need(node.inputs), bottom = need(node.outputs);
+    const w = Math.max(DAGEditor._FLIP_W, top.width, bottom.width);
+    const zone = n => n.widest ? 22 : 8;                    // label row + the dot's overhang, or just the overhang
+    const h = Math.max(DAGEditor._NODE_MIN_H, zone(top) + lines.length * LH + 12 + zone(bottom));
 
-    const g = { w, h, top: top.zone, bottom: bottom.zone, compact,
-                inX: top.offs.map(o => w / 2 + o), outX: bottom.offs.map(o => w / 2 + o) };
+    const spread = ports => ports.map((_, i) => w * (i + 1) / (ports.length + 1));
+    const g = { w, h, top: zone(top), bottom: zone(bottom), compact,
+                inX: spread(node.inputs), outX: spread(node.outputs) };
     this._flipCache.set(node.id, { sig, g });
     return g;
   }

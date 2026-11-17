@@ -99,7 +99,7 @@ editor.removePort('n3', 'output', port.id);   // also removes every edge attache
 
 ## Orientation: landscape and portrait
 
-If the container is **taller than it is wide**, the graph is shown *flipped*: the X and Y axes are swapped, so each node has its inputs on its top edge and its outputs on its bottom edge, and the strata run from top to bottom. Each node keeps its position relative to the others, so a node near the top of a wide pane ends up near the left of a tall one. Text always stays upright: each port label sits just inside the edge, under (or over) its port, and the ports on a side are spaced just far enough apart for their labels.
+If the container is **taller than it is wide**, the graph is shown *flipped*: the X and Y axes are swapped, so each node has its inputs on its top edge and its outputs on its bottom edge, and the strata run from top to bottom. Each node keeps its position relative to the others, so a node near the top of a wide pane ends up near the left of a tall one. Text always stays upright: each port label sits just inside the edge, under (or over) its port. The ports on each edge are spread evenly across the node — one in the middle, two at thirds, three at quarters, and so on, whatever their labels — and a node is made wider if its labels need the room.
 
 - Whenever the container is resized, the graph is re-fitted to the new size and the orientation is chosen again (a `ResizeObserver` watches the container).
 - Flipping affects only how the graph is drawn. `node.x` and `node.y`, and so `toJSON()`, `exportJSON()` and `getGraph()`, are **always in the unflipped, left-to-right orientation**; `addNode(label, x, y)` and `fromJSON()` take positions in that orientation too.
