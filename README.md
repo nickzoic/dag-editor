@@ -7,6 +7,8 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 * [Live DAGEditor demo page](https://nickzoic.github.io/dag-editor/dag-editor-demo.html)
 * [Github Repo](https://github.com/nickzoic/dag-editor/)
 
+[![Tests](https://github.com/nickzoic/dag-editor/actions/workflows/test.yml/badge.svg)](https://github.com/nickzoic/dag-editor/actions/workflows/test.yml)
+
 ## Files
 
 | File | Purpose |
@@ -14,6 +16,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 | `dag-editor.js` | All logic — `DAGNode`, `DAGEdge`, `DAGEditor` classes |
 | `dag-editor.css` | All styles and design tokens |
 | `dag-editor-demo.html` | Working demo (requires the two files above in the same directory) |
+| `test/`, `package.json` | The unit and browser tests, and the (development-only) tools they use — see [Running the tests](#running-the-tests) |
 | `screenshot.png` | The screenshot at the top of this page |
 
 ## Quick Start
@@ -228,6 +231,59 @@ All colours are CSS custom properties on `:root` in `dag-editor.css`:
 ```
 
 ---
+
+## Running the tests
+
+The component has no dependencies. The tests do: they need **Node.js 22.22 or later** (or 24.15+), and npm is used only to install the test tools ([jsdom](https://github.com/jsdom/jsdom), [puppeteer-core](https://pptr.dev/) and [c8](https://github.com/bcoe/c8)):
+
+```sh
+npm install        # once.  (npm ci installs exactly what package-lock.json says)
+npm test           # everything
+```
+
+| Command | What it runs |
+|---------|--------------|
+| `npm test` | all the tests: unit, then browser |
+| `npm run test:unit` | unit tests only — about 40 seconds, no browser needed |
+| `npm run test:browser` | browser integration tests only — needs Chrome or Chromium |
+| `npm run coverage` | all the tests with code coverage; **fails if coverage drops below the thresholds** in `.c8rc.json` |
+| `npm run coverage:unit`, `npm run coverage:browser` | coverage of just one kind, with no threshold |
+
+To run part of the suite, pass options to the test runner after `--`, or run a file directly:
+
+```sh
+npm run test:unit -- --test-name-pattern="flip"      # tests whose names match
+node --test test/unit/layout.test.js                 # one file
+```
+
+### What is tested
+
+* **Unit tests** (`test/unit/`) load `dag-editor.js` into [jsdom](https://github.com/jsdom/jsdom) and exercise the whole API: building graphs and the rules that keep them valid (no self-loops, duplicates or cycles), deleting with edge bridging, port editing, undo and redo, import and export (including version 1 graphs), node sizing and label wrapping, counting user-perceived characters (with and without `Intl.Segmenter`), edge curves, auto-layout, orientation and resizing, and the mouse and keyboard handlers. They also apply long **random sequences of edits** and lay out random graphs, checking after every step that the graph is still a valid DAG, that what is drawn matches the model, that nothing overlaps in either orientation, and that a layout is repeatable.
+* **Browser tests** (`test/browser/`) drive the demo page in a real Chrome with [puppeteer-core](https://pptr.dev/), using real pointer, keyboard and wheel input. They check what jsdom cannot: text measured by the browser (so wrapped labels and port labels really fit), CSS states (hover, selected, port rings), flipping and re-fitting as the window is resized, the demo's full-height layout and node editor, and the event log and import/export.
+
+jsdom does no layout, so the unit tests give the container a size, and replace the clock and `requestAnimationFrame` with a manual clock that runs animations instantly. Helpers for both kinds of test are in `test/helpers/`.
+
+### The browser tests
+
+They need Chrome or Chromium installed. The usual locations are searched; otherwise say where it is:
+
+| Setting | Effect |
+|---------|--------|
+| `CHROME_PATH=/path/to/chrome` | use this browser |
+| `PUPPETEER_HEADLESS=shell` | for a `chrome-headless-shell` build (the default is Chrome's own headless mode) |
+| `HEADED=1` | show the browser window while the tests run |
+
+```sh
+CHROME_PATH=/usr/bin/chromium npm run test:browser
+```
+
+### Coverage
+
+`npm run coverage` prints a table and writes a report to `coverage/`: open `coverage/index.html` to see which lines are not covered, or use `coverage/lcov.info` with other tools. The unit tests and the browser tests both contribute: the browser's own V8 coverage of `dag-editor.js` is collected and merged with the unit tests', so code that only runs in a real browser (such as text measurement) counts.
+
+### Continuous integration
+
+[`.github/workflows/test.yml`](.github/workflows/test.yml) runs on every push and pull request: the unit tests on Node 22 and 24, and the browser tests with coverage on Node 22 using the Chrome that comes with GitHub's runners. The run fails if any test fails or coverage falls below the thresholds. The coverage report is attached to each run as the `coverage-report` artifact, with a summary on the run's page.
 
 ## Origin
 

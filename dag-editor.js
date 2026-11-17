@@ -545,10 +545,6 @@ class DAGEditor {
              y: (cy - r.top  - this._viewY) / this._scale };
   }
 
-  _graphToSVG(gx, gy) {
-    return { x: gx * this._scale + this._viewX, y: gy * this._scale + this._viewY };
-  }
-
   _applyTransform() {
     const t = `translate(${this._viewX},${this._viewY}) scale(${this._scale})`;
     this._gEdges.setAttribute('transform', t);
@@ -1618,6 +1614,17 @@ class DAGEditor {
       return hits;
     };
     const score = () => 3 * cutThrough() + crossings();
+    // How far the edges are from level: the total vertical distance between the two ends of every
+    // segment. It breaks ties between equally good attempts, in favour of the straighter (and so
+    // more compact) one.
+    const bend = () => {
+      let total = 0;
+      for (const segs of layerSegs) for (const g of segs) {
+        const ya = g.a.y + (g.aOff === null ? g.a.h / 2 : g.aOff), yb = g.b.y + (g.bOff === null ? g.b.h / 2 : g.bOff);
+        total += Math.abs(ya - yb);
+      }
+      return total;
+    };
 
     // One complete attempt, from a given starting order: order the columns, place, refine.
     const attempt = (keyOf, withSweeps = true) => {
@@ -1660,27 +1667,51 @@ class DAGEditor {
         if (!improved) break;
       }
       settle(30);
-      return score();
+      return { score: score(), bend: bend() };
     };
 
-    // Try several starting orders and keep the best result; an attempt only wins by being strictly
-    // better, so the earlier ones win ties. First comes the current vertical order exactly as it
-    // is (no sweeps), so a layout that is already good is left alone and laying out again can only
-    // improve it; then the current order with sweeps, its reverse, and seeded shuffles (so it is
-    // repeatable), which rescue the cases where the current order is a poor start.
+    // Try several starting orders and keep the best result: fewest cut-throughs and crossings, then
+    // straightest. An attempt only wins by being strictly better, so earlier ones win ties.
+    //   - the current vertical order exactly as it is (no sweeps), so a layout that is already good stays;
+    //   - the current order with crossing-reduction sweeps, and its reverse;
+    //   - seeded shuffles (so it is repeatable), which rescue the cases where the current order is a poor start.
+    // Then the best result is taken as the new "current" arrangement and the first three are tried again
+    // from there, until nothing improves. So a layout is always a fixed point of itself: laying it out
+    // again changes nothing.
     const shuffle = seed => { let t = seed >>> 0; const r = new Map();
       for (const v of everything) r.set(v, ((t = (t * 1664525 + 1013904223) >>> 0) / 4294967296));
       return v => r.get(v); };
-    const starts = nStarts === 1 ? [[v => v.key, true]]
-                 : [[v => v.key, false], [v => v.key, true], [v => -v.key, true]];
-    for (let k = 1; starts.length < nStarts; k++) starts.push([shuffle(k), true]);
+    const fromCurrent = nStarts === 1 ? [[v => v.key, true]]
+                      : [[v => v.key, false], [v => v.key, true], [v => -v.key, true]];
+    const shuffled = [];
+    for (let k = 1; fromCurrent.length + shuffled.length < nStarts; k++) shuffled.push([shuffle(k), true]);
+
     let best = null;
-    for (const [keyOf, withSweeps] of starts.slice(0, nStarts)) {
-      const sc = attempt(keyOf, withSweeps);
-      if (!best || sc < best.score) best = { score: sc, order: layers.map(l => l.slice()), ys: everything.map(v => v.y) };
+    const consider = (keyOf, withSweeps) => {
+      const r = attempt(keyOf, withSweeps);
+      if (!best || r.score < best.score || (r.score === best.score && r.bend < best.bend - 0.5)) {
+        best = { ...r, order: layers.map(l => l.slice()), ys: everything.map(v => v.y) };
+        return true;
+      }
+      return false;
+    };
+    const restore = () => {
+      layers.forEach((layer, i) => { layer.splice(0, layer.length, ...best.order[i]); layer.forEach((v, k) => { v.order = k; }); });
+      everything.forEach((v, k) => { v.y = best.ys[k]; });
+    };
+    for (const [keyOf, withSweeps] of [...fromCurrent, ...shuffled]) consider(keyOf, withSweeps);
+
+    for (let round = 0; round < 3 && nStarts > 1; round++) {
+      restore();
+      for (const v of everything) {                         // read the best arrangement back as positions
+        if (!v.dummy) v.key = v.y + v.h / 2;
+        else { const { u, fo, v: tv, to } = v.edge, y0 = u.y + fo; v.key = y0 + (tv.y + to - y0) * smooth(v.f); }
+      }
+      let improved = false;
+      for (const [keyOf, withSweeps] of fromCurrent) improved = consider(keyOf, withSweeps) || improved;
+      if (!improved) break;
     }
-    layers.forEach((layer, i) => { layer.splice(0, layer.length, ...best.order[i]); layer.forEach((v, k) => { v.order = k; }); });
-    everything.forEach((v, k) => { v.y = best.ys[k]; });
+    restore();
 
     let minY = Infinity;
     for (const v of real.values()) minY = Math.min(minY, v.y + v.shift);

@@ -1,0 +1,17 @@
+{
+  "include": [
+    "dag-editor.js"
+  ],
+  "reporter": [
+    "text",
+    "lcov",
+    "html",
+    "json-summary"
+  ],
+  "reports-dir": "coverage",
+  "check-coverage": true,
+  "lines": 99,
+  "statements": 99,
+  "functions": 99,
+  "branches": 97
+}

@@ -1,0 +1,27 @@
+{
+  "name": "dag-editor",
+  "version": "1.0.0",
+  "description": "A standalone, zero-dependency interactive editor for directed acyclic graphs",
+  "license": "CC0-1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickzoic/dag-editor.git"
+  },
+  "private": true,
+  "scripts": {
+    "test": "node test/run.js all",
+    "test:unit": "node test/run.js unit",
+    "test:browser": "node test/run.js browser",
+    "coverage": "c8 node test/run.js all",
+    "coverage:unit": "c8 --check-coverage=false node test/run.js unit",
+    "coverage:browser": "c8 --check-coverage=false node test/run.js browser"
+  },
+  "devDependencies": {
+    "c8": "^12.0.0",
+    "jsdom": "^31.0.1",
+    "puppeteer-core": "^25.17.0"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26"
+  }
+}
