@@ -1,8 +1,11 @@
 # DAGEditor
 
+A standalone, zero-dependency interactive editor for directed acyclic graphs. Drop it into any page — no build step, no npm, no frameworks.
+
 ![The DAGEditor demo: a 12-node sample graph laid out automatically, with the Enrich node selected and its label and ports shown in the node editor below](screenshot.png)
 
-A standalone, zero-dependency interactive editor for directed acyclic graphs. Drop it into any page — no build step, no npm, no frameworks.
+* [Live DAGEditor demo page](https://nickzoic.github.io/dag-editor/dag-editor-demo.html)
+* [Github Repo](https://github.com/nickzoic/dag-editor/)
 
 ## Files
 
@@ -18,7 +21,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 ```html
 <link rel="stylesheet" href="dag-editor.css">
 
-<div id="my-graph" style="height: 480px;"></div>
+<div id="my-graph" style="height: 100%;"></div>
 
 <script src="dag-editor.js"></script>
 <script>
