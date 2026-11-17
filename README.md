@@ -97,6 +97,15 @@ editor.removePort('n3', 'output', port.id);   // also removes every edge attache
 
 ---
 
+## Orientation: landscape and portrait
+
+If the container is **taller than it is wide**, the graph is shown *flipped*: the X and Y axes are swapped, so each node has its inputs on its top edge and its outputs on its bottom edge, and the strata run from top to bottom. Each node keeps its position relative to the others, so a node near the top of a wide pane ends up near the left of a tall one. Labels stay upright; on nodes with long port labels, those labels are turned to run along the node.
+
+- Whenever the container is resized, the graph is re-fitted to the new size and the orientation is chosen again (a `ResizeObserver` watches the container).
+- Flipping affects only how the graph is drawn. `node.x` and `node.y`, and so `toJSON()`, `exportJSON()` and `getGraph()`, are **always in the unflipped, left-to-right orientation**; `addNode(label, x, y)` and `fromJSON()` take positions in that orientation too.
+- `editor.flipped` tells you which orientation is showing.
+- Auto-layout leaves room for both orientations, so a graph laid out in one looks right in the other.
+
 ## Auto-Layout
 
 Click **⟳ Layout** (or press `L`) for a one-shot animated layout. Nodes are arranged in columns left to right by their depth in the graph, ordered within each column to reduce edge crossings, and positioned so connected ports line up. Nodes never overlap, and long edges are given their own lane between nodes where they can. The nodes glide into place (about half a second) while the view stays fitted to the window. The result is deterministic: the same graph and arrangement always lay out the same way.
@@ -143,6 +152,7 @@ editor.loadGraph(data)   // load plain object (v1 or v2), fit view
 
 // View
 editor.autoLayout(active)  // programmatic layout control
+editor.flipped             // true while the graph is shown flipped (container taller than wide)
 editor.undo()
 editor.redo()
 editor.destroy()           // remove all DOM

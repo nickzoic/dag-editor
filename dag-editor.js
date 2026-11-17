@@ -15,6 +15,12 @@
  * Node labels and ports are edited through the API (the host page supplies the
  * UI): setNodeLabel(), addPort(), removePort(), setPortLabel().
  *
+ * Orientation: if the container is taller than it is wide, the graph is shown FLIPPED —
+ * the axes are swapped, so inputs are on the top edge of each node, outputs on the bottom
+ * edge, and strata run top to bottom. Flipping is display only: node.x / node.y (and so
+ * toJSON / getGraph) are always in the unflipped, left-to-right orientation. Whenever the
+ * container is resized the graph is re-fitted, and flipped or unflipped as appropriate.
+ *
  * Mouse interactions:
  *   - Click empty canvas      → create node
  *   - Click node              → select node
@@ -114,7 +120,10 @@ class DAGEditor {
     this._undoStack = [];        // snapshots; index 0 is the baseline (initial state)
     this._redoStack = [];
     this._lastSnapKey = null;    // lets repeated edits of one field share an undo step
-    this._lineCache   = new Map();   // node id → { label, maxW, lines }  (wrapped label text)
+    this._lineCache   = new Map();   // "id|U" / "id|F" → { id, label, maxW, lines }  (wrapped label text)
+    this._flipCache   = new Map();   // node id → { sig, g }  (geometry of the node when flipped)
+    this._flipped     = false;       // shown with the axes swapped (container taller than wide)?
+    this._resizeObserver = null;
 
     this._layoutActive    = false;
     this._layoutPinned    = false;   // double-click mode: re-layout on every graph change
@@ -125,6 +134,9 @@ class DAGEditor {
 
     this._buildDOM();
     this._attachEvents();
+    this._flipped = this._isPortrait();
+    this._svg.classList.toggle('dag-svg--flipped', this._flipped);
+    this._watchSize();
     this._render();
     this._undoStack.push(this._serialise());
   }
@@ -138,6 +150,8 @@ class DAGEditor {
   static _PORT_HIT_R    = 12;   // hit-test radius
   static _NODE_RX       = 8;
   static _LINE_H        = 16;   // line height of the node label
+  static _FLIP_W        = 120;  // least width of a node when flipped (it grows to fit its ports)
+  static _FLIP_LABEL_W  = 100;  // label wrap width when flipped
   static _LAYOUT_DEADLINE = 1500;   // ms: an auto-layout run always ends by now
   static _LAYOUT_TAU      = 90;     // ms: time constant of the glide to the target (settles in <0.8 s)
   static _LAYOUT_COL_GAP  = 70;     // px between columns (strata)
@@ -204,15 +218,17 @@ class DAGEditor {
   /* ── node label wrapping ── */
 
   /* Rendered width of a string in the node-label font; estimated when it cannot be measured. */
-  _textWidth(str) {
-    const el = this._measureEl;
+  _textWidth(str, el = this._measureEl, charW = 7.2) {
     if (el && typeof el.getComputedTextLength === 'function') {
       el.textContent = str;
       const w = el.getComputedTextLength();
       if (w > 0) return w;
     }
-    return str.length * 7.2;
+    return str.length * charW;
   }
+
+  /* Same for a port label, which is set in a smaller font. */
+  _portTextWidth(str) { return this._textWidth(str, this._measurePortEl, 5.8); }
 
   /* Greedy word wrap to maxW. A word wider than a whole line is split into line-sized pieces. */
   _wrapLabel(text, maxW) {
@@ -236,20 +252,29 @@ class DAGEditor {
     return lines;
   }
 
-  /* Wrapped lines of a node's label (cached until the label or layout class changes). */
-  _labelLines(node) {
-    const maxW = this._isCompact(node) ? DAGEditor._LABEL_W_COMPACT : DAGEditor._LABEL_W_EXPANDED;
-    let c = this._lineCache.get(node.id);
+  /* Wrapped lines of a node's label, for the current orientation unless told otherwise
+   * (cached until the label or layout class changes). */
+  _labelLines(node, flipped = this._flipped) {
+    const maxW = flipped ? DAGEditor._FLIP_LABEL_W
+               : this._isCompact(node) ? DAGEditor._LABEL_W_COMPACT : DAGEditor._LABEL_W_EXPANDED;
+    const key = node.id + (flipped ? '|F' : '|U');
+    let c = this._lineCache.get(key);
     if (!c || c.label !== node.label || c.maxW !== maxW) {
-      c = { label: node.label, maxW, lines: this._wrapLabel(node.label, maxW) };
-      this._lineCache.set(node.id, c);
+      c = { id: node.id, label: node.label, maxW, lines: this._wrapLabel(node.label, maxW) };
+      this._lineCache.set(key, c);
     }
     return c.lines;
   }
 
+  /* ── Unflipped (model-space) geometry ──────────────────────────────────────
+   * _headerHeight / _nodeHeight / _portLocalY describe a node in the unflipped,
+   * left-to-right orientation, whatever orientation is being shown. The layout and
+   * the exported positions are in these terms; _boxOf / _flipGeom turn them into
+   * what is actually drawn. */
+
   /* Expanded nodes: height of the header (label block) above the ports. */
   _headerHeight(node) {
-    return DAGEditor._PORT_TOP + (this._labelLines(node).length - 1) * DAGEditor._LINE_H;
+    return DAGEditor._PORT_TOP + (this._labelLines(node, false).length - 1) * DAGEditor._LINE_H;
   }
 
   /* Dynamic node height: grows to fit the wrapped label and the ports. */
@@ -257,7 +282,7 @@ class DAGEditor {
     const PP    = DAGEditor._PORT_PITCH;
     const ports = Math.max(node.inputs.length, node.outputs.length);
     if (this._isCompact(node)) {
-      const labelH = this._labelLines(node).length * DAGEditor._LINE_H + 30;
+      const labelH = this._labelLines(node, false).length * DAGEditor._LINE_H + 30;
       return Math.max(DAGEditor._NODE_MIN_H, labelH, ports * PP + 16);
     }
     return this._headerHeight(node) + ports * PP + 8;
@@ -273,34 +298,97 @@ class DAGEditor {
     return this._headerHeight(node) + idx * PP + PP / 2;
   }
 
-  /* Position of a specific output port in graph coords */
+  /* ── Flipped geometry ──────────────────────────────────────────────────────
+   * Flipped, a node has its inputs along the top edge and its outputs along the bottom edge.
+   * Port x positions are the unflipped port y offsets measured from the node's centre, so ports
+   * that line up in the model still line up on screen. The label stays upright. A long port
+   * label would run into its neighbours if laid across a 22 px pitch, so on non-compact nodes
+   * it is turned to run along the node (compact nodes only have 1-character labels). */
+  _flipGeom(node) {
+    const sig = JSON.stringify([node.label, node.inputs.map(p => p.label), node.outputs.map(p => p.label)]);
+    const hit = this._flipCache.get(node.id);
+    if (hit && hit.sig === sig) return hit.g;
+
+    const PR = DAGEditor._PORT_R, LH = DAGEditor._LINE_H;
+    const compact = this._isCompact(node);
+    const hu      = this._nodeHeight(node);
+    const lines   = this._labelLines(node, true);
+    const inOff   = node.inputs.map((_, i)  => this._portLocalY(node, 'input',  i) - hu / 2);
+    const outOff  = node.outputs.map((_, i) => this._portLocalY(node, 'output', i) - hu / 2);
+    const half    = Math.max(0, ...inOff.map(Math.abs), ...outOff.map(Math.abs));
+    const w       = Math.max(DAGEditor._FLIP_W, 2 * (half + PR + 8));
+
+    // room above / below the label for the port labels (and the port dots, half of which stick out)
+    const zone = ports => {
+      const labels = ports.map(p => p.label).filter(Boolean);
+      if (!labels.length) return 8;
+      if (compact) return 20;
+      return Math.max(20, Math.max(...labels.map(l => this._portTextWidth(l))) + 18);
+    };
+    const top = zone(node.inputs), bottom = zone(node.outputs);
+    const h   = Math.max(DAGEditor._NODE_MIN_H, top + lines.length * LH + 12 + bottom);
+
+    const g = { w, h, top, bottom, compact,
+                inX: inOff.map(o => w / 2 + o), outX: outOff.map(o => w / 2 + o) };
+    this._flipCache.set(node.id, { sig, g });
+    return g;
+  }
+
+  /* The box a node is drawn in, in display space. Flipped, the centre of the node's unflipped box
+   * is transposed (x ↔ y), so the nodes keep their positions relative to one another. */
+  _boxOf(node, f = null) {
+    const W  = DAGEditor._NODE_W, hu = this._nodeHeight(node);
+    if (!this._flipped) return { x: node.x, y: node.y, w: W, h: hu };
+    f = f || this._flipGeom(node);
+    const cx = node.x + W / 2, cy = node.y + hu / 2;
+    return { x: cy - f.w / 2, y: cx - f.h / 2, w: f.w, h: f.h };
+  }
+
+  /* Display position of port number idx. direction: 'input' | 'output' */
+  _portPos(node, direction, idx) {
+    if (!this._flipped) {
+      return { x: node.x + (direction === 'output' ? DAGEditor._NODE_W : 0),
+               y: node.y + this._portLocalY(node, direction, idx) };
+    }
+    const f = this._flipGeom(node), b = this._boxOf(node, f);
+    return direction === 'output' ? { x: b.x + f.outX[idx], y: b.y + b.h }
+                                  : { x: b.x + f.inX[idx],  y: b.y };
+  }
+
+  /* Position of a specific output port in graph (display) coords */
   _outputPortPos(node, portId) {
     const idx = node.outputs.findIndex(p => p.id === portId);
-    if (idx < 0) return null;
-    return { x: node.x + DAGEditor._NODE_W, y: node.y + this._portLocalY(node, 'output', idx) };
+    return idx < 0 ? null : this._portPos(node, 'output', idx);
   }
 
-  /* Position of a specific input port in graph coords */
+  /* Position of a specific input port in graph (display) coords */
   _inputPortPos(node, portId) {
     const idx = node.inputs.findIndex(p => p.id === portId);
-    if (idx < 0) return null;
-    return { x: node.x, y: node.y + this._portLocalY(node, 'input', idx) };
+    return idx < 0 ? null : this._portPos(node, 'input', idx);
   }
 
-  /* First output / input port positions */
+  /* First output / input port positions (or where they would be, for a node without ports) */
   _firstOutputPos(node) {
-    if (!node.outputs.length) return { x: node.x + DAGEditor._NODE_W, y: node.y + this._nodeHeight(node) / 2 };
-    return this._outputPortPos(node, node.outputs[0].id);
+    if (node.outputs.length) return this._portPos(node, 'output', 0);
+    const b = this._boxOf(node);
+    return this._flipped ? { x: b.x + b.w / 2, y: b.y + b.h } : { x: b.x + b.w, y: b.y + b.h / 2 };
   }
 
   _firstInputPos(node) {
-    if (!node.inputs.length) return { x: node.x, y: node.y + this._nodeHeight(node) / 2 };
-    return this._inputPortPos(node, node.inputs[0].id);
+    if (node.inputs.length) return this._portPos(node, 'input', 0);
+    const b = this._boxOf(node);
+    return this._flipped ? { x: b.x + b.w / 2, y: b.y } : { x: b.x, y: b.y + b.h / 2 };
+  }
+
+  /* Where an edge starts / ends on a port: its outer surface, along the direction of flow. */
+  _portSurface(pos, direction) {
+    const d = direction === 'output' ? DAGEditor._PORT_R : -DAGEditor._PORT_R;
+    return this._flipped ? { x: pos.x, y: pos.y + d } : { x: pos.x + d, y: pos.y };
   }
 
   _nodeHitTest(node, gx, gy) {
-    const h = this._nodeHeight(node);
-    return gx >= node.x && gx <= node.x + DAGEditor._NODE_W && gy >= node.y && gy <= node.y + h;
+    const b = this._boxOf(node);
+    return gx >= b.x && gx <= b.x + b.w && gy >= b.y && gy <= b.y + b.h;
   }
 
   _portHitTest(pos, gx, gy) {
@@ -356,6 +444,9 @@ class DAGEditor {
     this._measureEl.setAttribute('x', 0);
     this._measureEl.setAttribute('y', 0);
     this._svg.appendChild(this._measureEl);
+    this._measurePortEl = this._measureEl.cloneNode(false);        // the same, in the port-label font
+    this._measurePortEl.setAttribute('class', 'dag-port-label');
+    this._svg.appendChild(this._measurePortEl);
 
     this._gEdges   = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     this._gNodes   = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -415,6 +506,39 @@ class DAGEditor {
     });
   }
 
+  /* ─────────────────── orientation and resizing ─────────────────── */
+
+  /* Flipped (portrait) when the container is taller than it is wide. */
+  _isPortrait() {
+    const r = this._container.getBoundingClientRect();
+    return r.height > r.width;
+  }
+
+  _watchSize() {
+    const onResize = () => this._onResize();
+    if (typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver(onResize);
+      this._resizeObserver.observe(this._container);
+    } else {                                           // very old browsers: window resizes only
+      this._windowResize = onResize;
+      window.addEventListener('resize', onResize);
+    }
+  }
+
+  /* The container changed size: pick the orientation again and re-fit the graph to the new
+   * size. (The model is untouched; only how it is drawn changes.) */
+  _onResize() {
+    const flipped = this._isPortrait();
+    if (flipped !== this._flipped) {
+      this._flipped = flipped;
+      this._svg.classList.toggle('dag-svg--flipped', flipped);
+    }
+    this._fitView();
+  }
+
+  /* Whether the graph is currently shown flipped (axes swapped). */
+  get flipped() { return this._flipped; }
+
   /* ─────────────────── coordinate helpers ─────────────────── */
   _svgRect() { return this._svg.getBoundingClientRect(); }
 
@@ -442,12 +566,11 @@ class DAGEditor {
 
     // --- port drag
     for (const node of this._nodes.values()) {
-      const PR = DAGEditor._PORT_R;
       // Output ports
       for (const port of node.outputs) {
         const pos = this._outputPortPos(node, port.id);
         if (this._portHitTest(pos, gp.x, gp.y)) {
-          const sx = pos.x + PR, sy = pos.y;  // start at port surface
+          const { x: sx, y: sy } = this._portSurface(pos, 'output');   // start at the port surface
           this._edgeDraft = { fromNodeId: node.id, fromPortId: port.id,
                               x1: sx, y1: sy, x2: gp.x, y2: gp.y };
           this._draftLine.setAttribute('x1', sx);   this._draftLine.setAttribute('y1', sy);
@@ -460,7 +583,7 @@ class DAGEditor {
       for (const port of node.inputs) {
         const pos = this._inputPortPos(node, port.id);
         if (this._portHitTest(pos, gp.x, gp.y)) {
-          const ex = pos.x - PR, ey = pos.y;  // end at port surface
+          const { x: ex, y: ey } = this._portSurface(pos, 'input');    // end at the port surface
           this._edgeDraft = { toNodeId: node.id, toPortId: port.id,
                               x1: gp.x, y1: gp.y, x2: ex, y2: ey };
           this._draftLine.setAttribute('x1', gp.x); this._draftLine.setAttribute('y1', gp.y);
@@ -498,7 +621,7 @@ class DAGEditor {
 
     // --- empty canvas → new node
     this._setSelected(null, null);
-    this._createNodeAt(gp.x - DAGEditor._NODE_W / 2, gp.y - DAGEditor._NODE_MIN_H / 2);
+    this._createNodeAtDisplay(gp.x, gp.y);
   }
 
   _onMouseMove(e) {
@@ -521,8 +644,9 @@ class DAGEditor {
       const dx = (e.clientX - this._dragging.startX) / this._scale;
       const dy = (e.clientY - this._dragging.startY) / this._scale;
       const node = this._nodes.get(this._dragging.nodeId);
-      node.x = this._dragging.origX + dx;
-      node.y = this._dragging.origY + dy;
+      // flipped, the screen's x axis is the model's y axis and vice versa
+      node.x = this._dragging.origX + (this._flipped ? dy : dx);
+      node.y = this._dragging.origY + (this._flipped ? dx : dy);
       this._render(); return;
     }
 
@@ -555,8 +679,6 @@ class DAGEditor {
       this._draftLine.style.display = 'none';
       this._clearPortTargets();
 
-      const W = DAGEditor._NODE_W, H = DAGEditor._NODE_MIN_H;
-
       if (draft.fromNodeId) {
         // Output drag → find a compatible input port
         let landed = false;
@@ -577,7 +699,7 @@ class DAGEditor {
           }
         }
         if (!landed) {
-          const nn = this._createNodeAt(gp.x - W / 2, gp.y - H / 2);
+          const nn = this._createNodeAtDisplay(gp.x, gp.y);
           if (nn.inputs.length) this._tryAddEdge(draft.fromNodeId, draft.fromPortId, nn.id, nn.inputs[0].id);
         }
       } else {
@@ -598,7 +720,7 @@ class DAGEditor {
           }
         }
         if (!landed) {
-          const nn = this._createNodeAt(gp.x - W / 2, gp.y - H / 2);
+          const nn = this._createNodeAtDisplay(gp.x, gp.y);
           if (nn.outputs.length) this._tryAddEdge(nn.id, nn.outputs[0].id, draft.toNodeId, draft.toPortId);
         }
       }
@@ -672,10 +794,8 @@ class DAGEditor {
       const toNode   = this._nodes.get(edge.toNodeId);
       if (!fromNode || !toNode) continue;
 
-      const W = DAGEditor._NODE_W, H = DAGEditor._NODE_MIN_H;
-
       // Create the new node centred on the click, with matching port types
-      const newNode = this._createNodeAt(gp.x - W / 2, gp.y - H / 2, {
+      const newNode = this._createNodeAtDisplay(gp.x, gp.y, {
         inputs:  [{ id: 'in',  label: '' }],
         outputs: [{ id: 'out', label: '' }],
       });
@@ -757,7 +877,7 @@ class DAGEditor {
    *   so the path visibly departs/arrives at 45°.
    *   Handles are diagonal (equal x and y), length = max(30, |dy| * 0.35).
    */
-  _edgeGeom(p1, p2) {
+  _edgeGeomH(p1, p2) {
     const PR    = DAGEditor._PORT_R + 1;   // +1 = half the 2px port stroke-width
     const ARROW = 8;
     const D45   = PR / Math.SQRT2;   // PR projected onto each axis at 45°
@@ -789,6 +909,15 @@ class DAGEditor {
     }
 
     return { sx, sy, cx1, cy1, cx2, cy2, ex, ey };
+  }
+
+  /* Edge geometry for what is drawn. Flipped, the flow runs downwards, so work out the same
+   * curve with the axes swapped (it leaves an output heading down, enters an input heading
+   * down, and takes the 45° line when it is more sideways than down) and swap the result back. */
+  _edgeGeom(p1, p2) {
+    if (!this._flipped) return this._edgeGeomH(p1, p2);
+    const g = this._edgeGeomH({ x: p1.y, y: p1.x }, { x: p2.y, y: p2.x });
+    return { sx: g.sy, sy: g.sx, cx1: g.cy1, cy1: g.cx1, cx2: g.cy2, cy2: g.cx2, ex: g.ey, ey: g.ex };
   }
 
   /* Kept for the layout repulsion sampler which passes raw port-centre points. */
@@ -849,11 +978,29 @@ class DAGEditor {
     return node;
   }
 
+  /* Model top-left of a node (unflipped height hu) whose centre is at display point (gx, gy). */
+  _modelTopLeftForCentre(gx, gy, hu) {
+    const W = DAGEditor._NODE_W;
+    return this._flipped ? { x: gy - W / 2, y: gx - hu / 2 }      // display x ↔ model y
+                         : { x: gx - W / 2, y: gy - hu / 2 };
+  }
+
+  /* Create a node whose CENTRE is at the display point (gx, gy), whatever the orientation
+   * (_createNodeAt itself takes the node's top-left in model coordinates). */
+  _createNodeAtDisplay(gx, gy, opts = {}) {
+    const label   = opts.label   ?? this._uniqueLabel('Node');
+    const inputs  = opts.inputs  ?? this._makeDefaultPorts().inputs;
+    const outputs = opts.outputs ?? this._makeDefaultPorts().outputs;
+    const probe   = new DAGNode({ id: '\u0000probe', label, inputs, outputs });   // to learn its height
+    const p = this._modelTopLeftForCentre(gx, gy, this._nodeHeight(probe));
+    return this._createNodeAt(p.x, p.y, { ...opts, label, inputs, outputs });
+  }
+
   _createNodeAtCenter() {
     const r  = this._svgRect();
     const gp = this._clientToGraph(r.left + r.width / 2, r.top + r.height / 2);
     const off = this._nodes.size * 24 % 160;
-    return this._createNodeAt(gp.x - DAGEditor._NODE_W / 2 + off, gp.y - DAGEditor._NODE_MIN_H / 2 + off);
+    return this._createNodeAtDisplay(gp.x + off, gp.y + off);
   }
 
   _tryAddEdge(fromNodeId, fromPortId, toNodeId, toPortId) {
@@ -980,10 +1127,11 @@ class DAGEditor {
     const pad = 60;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of this._nodes.values()) {
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + DAGEditor._NODE_W);
-      maxY = Math.max(maxY, n.y + this._nodeHeight(n));
+      const b = this._boxOf(n);
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.w);
+      maxY = Math.max(maxY, b.y + b.h);
     }
     const r = this._svgRect();
     const scaleX = (r.width  - pad * 2) / (maxX - minX || 1);
@@ -1076,43 +1224,44 @@ class DAGEditor {
       if (!existing.has(el.dataset.id)) el.remove();
     }
 
-    const W  = DAGEditor._NODE_W;
     const RX = DAGEditor._NODE_RX;
     const PR = DAGEditor._PORT_R;
     const LH = DAGEditor._LINE_H;
     const SVGNS = 'http://www.w3.org/2000/svg';
+    const flipped = this._flipped;
 
-    for (const id of [...this._lineCache.keys()]) {
-      if (!this._nodes.has(id)) this._lineCache.delete(id);
-    }
+    for (const [key, c] of [...this._lineCache]) if (!this._nodes.has(c.id)) this._lineCache.delete(key);
+    for (const id of [...this._flipCache.keys()]) if (!this._nodes.has(id)) this._flipCache.delete(id);
 
     for (const node of this._nodes.values()) {
-      const H       = this._nodeHeight(node);
       const compact = this._isCompact(node);
+      const f       = flipped ? this._flipGeom(node) : null;
+      const box     = this._boxOf(node, f);
+      const W = box.w, H = box.h;
       const sel     = this._selected?.kind === 'node' && this._selected.id === node.id;
 
       let g = this._gNodes.querySelector(`[data-id="${node.id}"]`);
       if (!g) {
-        g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g = document.createElementNS(SVGNS, 'g');
         g.dataset.id = node.id;
         this._gNodes.appendChild(g);
       }
 
-      g.setAttribute('transform', `translate(${node.x},${node.y})`);
+      g.setAttribute('transform', `translate(${box.x},${box.y})`);
       g.setAttribute('class', `dag-node${sel ? ' dag-node--selected' : ''}${compact ? ' dag-node--compact' : ''}`);
 
       // background rect
       let rect = g.querySelector('rect.dag-node-bg');
       if (!rect) {
-        rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect = document.createElementNS(SVGNS, 'rect');
         rect.setAttribute('class', 'dag-node-bg');
         rect.setAttribute('rx', RX); rect.setAttribute('ry', RX);
         g.prepend(rect);
       }
       rect.setAttribute('width', W); rect.setAttribute('height', H);
 
-      // label — wrapped onto several lines; the block is centred vertically in compact
-      // mode and starts at the top (above the divider) in expanded mode
+      // label — wrapped onto several lines. Unflipped: centred vertically in a compact node, at the
+      // top (above the divider) in an expanded one. Flipped: centred between the port-label zones.
       let labelEl = g.querySelector('text.dag-node-label');
       if (!labelEl) {
         labelEl = document.createElementNS(SVGNS, 'text');
@@ -1122,46 +1271,59 @@ class DAGEditor {
         g.appendChild(labelEl);
       }
       const lines  = this._labelLines(node);
-      const firstY = compact ? H / 2 - (lines.length - 1) * LH / 2 : 18;
+      const firstY = flipped ? (f.top + (H - f.bottom)) / 2 - (lines.length - 1) * LH / 2
+                   : compact ? H / 2 - (lines.length - 1) * LH / 2 : 18;
       const lkey   = lines.join('\n');
       if (labelEl.dataset.lines !== lkey) {
         labelEl.replaceChildren();
         for (const line of lines) {
           const t = document.createElementNS(SVGNS, 'tspan');
-          t.setAttribute('x', W / 2);
           t.setAttribute('dominant-baseline', 'middle');
           t.textContent = line;
           labelEl.appendChild(t);
         }
         labelEl.dataset.lines = lkey;
       }
-      [...labelEl.children].forEach((t, i) => t.setAttribute('y', firstY + i * LH));
+      [...labelEl.children].forEach((t, i) => { t.setAttribute('x', W / 2); t.setAttribute('y', firstY + i * LH); });
 
-      // divider — only in expanded mode
-      let divider = g.querySelector('line.dag-node-divider');
+      // dividers — expanded nodes only. Unflipped: one under the header. Flipped: one under the
+      // port labels on the top edge and one above those on the bottom edge (where there are ports).
+      const dividerYs = [];
       if (!compact) {
-        if (!divider) {
-          divider = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-          divider.setAttribute('class', 'dag-node-divider');
-          g.appendChild(divider);
+        if (!flipped) dividerYs.push(this._headerHeight(node) - 6);
+        else {
+          if (node.inputs.length)  dividerYs.push(f.top);
+          if (node.outputs.length) dividerYs.push(H - f.bottom);
         }
-        const dy = this._headerHeight(node) - 6;
-        divider.setAttribute('x1', 0); divider.setAttribute('y1', dy);
-        divider.setAttribute('x2', W); divider.setAttribute('y2', dy);
-        divider.style.display = '';
-      } else if (divider) {
-        divider.style.display = 'none';
       }
+      const dividers = [...g.querySelectorAll('line.dag-node-divider')];
+      dividerYs.forEach((y, i) => {
+        let d = dividers[i];
+        if (!d) {
+          d = document.createElementNS(SVGNS, 'line');
+          d.setAttribute('class', 'dag-node-divider');
+          g.appendChild(d);
+        }
+        d.setAttribute('x1', 0); d.setAttribute('y1', y);
+        d.setAttribute('x2', W); d.setAttribute('y2', y);
+        d.style.display = '';
+      });
+      dividers.slice(dividerYs.length).forEach(d => { d.style.display = 'none'; });
 
       // ports
       const keepPorts = new Set();
 
-      const addPort = (port, dir, cx, cy) => {
+      const addPort = (port, dir, i) => {
+        // centre of the dot, relative to the node
+        let cx, cy;
+        if (flipped) { cx = (dir === 'in' ? f.inX : f.outX)[i]; cy = dir === 'in' ? 0 : H; }
+        else         { cx = dir === 'in' ? 0 : W; cy = this._portLocalY(node, dir === 'in' ? 'input' : 'output', i); }
+
         const pid = `${port.id}:${dir}`;
         keepPorts.add(pid);
         let circle = g.querySelector(`circle[data-port-uid="${pid}"]`);
         if (!circle) {
-          circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          circle = document.createElementNS(SVGNS, 'circle');
           circle.dataset.portUid = pid;
           circle.dataset.portId  = port.id;
           circle.dataset.portDir = dir;
@@ -1179,16 +1341,32 @@ class DAGEditor {
         let lbl = g.querySelector(`text[data-port-uid="${lid}"]`);
         if (showLabel) {
           if (!lbl) {
-            lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            lbl = document.createElementNS(SVGNS, 'text');
             lbl.dataset.portUid = lid;
             lbl.setAttribute('class', `dag-port-label dag-port-label-${dir}`);
             lbl.setAttribute('dominant-baseline', 'middle');
             g.appendChild(lbl);
           }
-          // Inside the node body: input labels right of the port dot, output labels left of it
-          lbl.setAttribute('text-anchor', dir === 'in' ? 'start' : 'end');
-          lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
-          lbl.setAttribute('y', cy);
+          if (!flipped) {
+            // inside the body: input labels right of the port dot, output labels left of it
+            lbl.setAttribute('text-anchor', dir === 'in' ? 'start' : 'end');
+            lbl.setAttribute('x', dir === 'in' ? PR + 4 : W - PR - 4);
+            lbl.setAttribute('y', cy);
+            lbl.removeAttribute('transform');
+          } else if (compact) {
+            // a single character just inside the edge, level with its dot's column
+            lbl.setAttribute('text-anchor', 'middle');
+            lbl.setAttribute('x', cx);
+            lbl.setAttribute('y', dir === 'in' ? 14 : H - 14);
+            lbl.removeAttribute('transform');
+          } else {
+            // turned to run along the node, starting at the dot and reading into the body
+            const ly = dir === 'in' ? 12 : H - 12;
+            lbl.setAttribute('text-anchor', dir === 'in' ? 'end' : 'start');
+            lbl.setAttribute('x', cx);
+            lbl.setAttribute('y', ly);
+            lbl.setAttribute('transform', `rotate(-90 ${cx} ${ly})`);
+          }
           lbl.textContent = port.label || '';
           lbl.style.display = '';
         } else if (lbl) {
@@ -1196,13 +1374,8 @@ class DAGEditor {
         }
       };
 
-      node.inputs.forEach((port, i) => {
-        addPort(port, 'in', 0, this._portLocalY(node, 'input', i));
-      });
-
-      node.outputs.forEach((port, i) => {
-        addPort(port, 'out', W, this._portLocalY(node, 'output', i));
-      });
+      node.inputs.forEach((port, i)  => addPort(port, 'in', i));
+      node.outputs.forEach((port, i) => addPort(port, 'out', i));
 
       // remove orphaned port elements
       for (const el of [...g.querySelectorAll('[data-port-uid]')]) {
@@ -1292,12 +1465,17 @@ class DAGEditor {
     if (!nodes.length) return targets;
 
     const W = DAGEditor._NODE_W, GAP = DAGEditor._LAYOUT_NODE_GAP;
-    const COL = W + DAGEditor._LAYOUT_COL_GAP;
+    // The layout is worked out in model (unflipped) coordinates, but the same positions are shown
+    // flipped when the container is taller than wide, where a node's width runs along its column
+    // and its height across the columns. So leave room for the larger of the two in each direction.
+    const flipH = Math.max(0, ...nodes.map(n => this._flipGeom(n).h));
+    const COL = Math.max(W + DAGEditor._LAYOUT_COL_GAP, flipH + GAP);
     // A lane is DUMMY_H plus the curve's sweep across its column. The sweep depends on where the edge's
     // ends are, and the ends move to suit the lanes, so it must be capped or dense graphs feed back on
     // themselves and the placement runs away.
     const DUMMY_H = 6, DUMMY_PAD = 8, MAX_SWEEP = 160;
     const stratum = this._computeStrata();
+    const smooth = t => t * t * (3 - 2 * t);     // the curve's height profile along its run
 
     // 1–2. vertices and the segments between neighbouring columns
     const layers = [];
@@ -1305,8 +1483,10 @@ class DAGEditor {
     const real = new Map();
     const longEdges = [];            // edges spanning 2+ columns: the ones that can cut through a node
     for (const n of nodes) {
-      const h = this._nodeHeight(n);
-      real.set(n.id, add({ node: n, layer: stratum.get(n.id) ?? 0, h, pad: GAP / 2, w: 4, key: n.y + h / 2 }));
+      const hu    = this._nodeHeight(n);
+      const h     = Math.max(hu, this._flipGeom(n).w);     // room it needs along the column, either way up
+      const shift = (h - hu) / 2;                          // the node sits in the middle of that room
+      real.set(n.id, add({ node: n, layer: stratum.get(n.id) ?? 0, h, shift, pad: GAP / 2, w: 4, key: n.y + hu / 2 }));
     }
     // A segment joins vertices a → b in neighbouring columns; aOff / bOff are the heights of the
     // attachment points below each vertex's top (null = the middle, used by dummies).
@@ -1316,16 +1496,20 @@ class DAGEditor {
       if (!u || !v || v.layer <= u.layer) continue;
       const fi = u.node.outputs.findIndex(p => p.id === e.fromPortId);
       const ti = v.node.inputs.findIndex(p => p.id === e.toPortId);
-      const fo = fi < 0 ? u.h / 2 : this._portLocalY(u.node, 'output', fi);
-      const to = ti < 0 ? v.h / 2 : this._portLocalY(v.node, 'input', ti);
+      const fo = fi < 0 ? u.h / 2 : this._portLocalY(u.node, 'output', fi) + u.shift;
+      const to = ti < 0 ? v.h / 2 : this._portLocalY(v.node, 'input', ti) + v.shift;
       // horizontal run of the curve, port to port; each dummy sits at its column's centre
       const xs = u.layer * COL + W, run = v.layer * COL - xs;
       if (v.layer - u.layer > 1) longEdges.push({ u, fo, v, to });
+      // Where the curve is now: ends at the ports as they currently sit. A lane's starting position is
+      // the curve's height at its column, so a graph that is already laid out is read back in the
+      // order it was laid out in (laying it out again then leaves it alone).
+      const y0 = u.node.y + fo - u.shift, y1 = v.node.y + to - v.shift;
       let prev = u, prevOff = fo;
       for (let l = u.layer + 1; l < v.layer; l++) {
-        const t = (l - u.layer) / (v.layer - u.layer);
-        const d = add({ dummy: true, layer: l, h: DUMMY_H, pad: DUMMY_PAD, w: 1, key: u.key + (v.key - u.key) * t,
-                        edge: { u, fo, v, to }, f: (l * COL + W / 2 - xs) / run, half: (W / 2) / run });
+        const f = (l * COL + W / 2 - xs) / run;
+        const d = add({ dummy: true, layer: l, h: DUMMY_H, pad: DUMMY_PAD, w: 1, key: y0 + (y1 - y0) * smooth(f),
+                        edge: { u, fo, v, to }, f, half: (W / 2) / run });
         segment(prev, prevOff, d, null);
         prev = d; prevOff = null;
       }
@@ -1340,20 +1524,24 @@ class DAGEditor {
     const crossCost = segCount.reduce((n, c) => n + c * c / 2, 0);     // one crossing count
     const nVertices = layers.reduce((n, l) => n + l.length, 0);
     const nSegments = segCount.reduce((n, c) => n + c, 0);
+    const nStarts   = nVertices <= 90 ? 12 : nVertices <= 220 ? 4 : 1; // attempts made; the best is kept
+    const sweeps    = Math.max(2, Math.min(24, Math.floor(4e6 / (crossCost + 1) / nStarts)));
+    const perTrial  = 10 * (nVertices + nSegments) + crossCost + 300 * longEdges.length;
+    const trials    = Math.min(400, Math.floor(2.5e6 / perTrial / nStarts));
+    const everything = layers.flat();
 
-    // 3. order within columns: start from the current vertical order, then sweep
-    for (const layer of layers) {
-      layer.sort((p, q) => p.key - q.key);
-      layer.forEach((v, i) => { v.order = i; });
-    }
-    const pos = (v, off) => off === null ? v.order : v.order + (off / v.h - 0.5) * 0.9;   // order index, refined by port height
+    // 3. ordering: a position along the column for each vertex, refined by port height
+    const pos = (v, off) => off === null ? v.order : v.order + (off / v.h - 0.5) * 0.9;
+    const layerSegs = layers.slice(0, -1).map(layer => layer.flatMap(v => v.outs));   // fixed: only positions change
     const crossings = () => {
       let c = 0;
-      for (let l = 0; l < L - 1; l++) {
-        const segs = layers[l].flatMap(v => v.outs);
-        for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
-          const s = segs[i], t = segs[j];
-          if ((pos(s.a, s.aOff) - pos(t.a, t.aOff)) * (pos(s.b, s.bOff) - pos(t.b, t.bOff)) < 0) c++;
+      for (const segs of layerSegs) {
+        for (let i = 0; i < segs.length; i++) {
+          const s = segs[i], sa = pos(s.a, s.aOff), sb = pos(s.b, s.bOff);
+          for (let j = i + 1; j < segs.length; j++) {
+            const t = segs[j];
+            if ((sa - pos(t.a, t.aOff)) * (sb - pos(t.b, t.bOff)) < 0) c++;
+          }
         }
       }
       return c;
@@ -1369,25 +1557,9 @@ class DAGEditor {
       layer.sort((p, q) => (val.get(p) - val.get(q)) || (p.order - q.order));
       layer.forEach((v, i) => { v.order = i; });
     };
-    let best = layers.map(l => l.slice()), bestCrossings = crossings();
-    const sweeps = Math.max(2, Math.min(24, Math.floor(4e6 / (crossCost + 1))));
-    for (let it = 0; it < sweeps && bestCrossings > 0; it++) {
-      if (it % 2 === 0) for (let l = 1; l < L; l++) reorder(layers[l], true);
-      else for (let l = L - 2; l >= 0; l--) reorder(layers[l], false);
-      const c = crossings();
-      if (c < bestCrossings) { bestCrossings = c; best = layers.map(l => l.slice()); }
-    }
-    layers.forEach((layer, i) => { layer.splice(0, layer.length, ...best[i]); layer.forEach((v, k) => { v.order = k; }); });
 
     // 4. vertical placement
     const sep = (a, b) => a.h + a.pad + b.pad;                     // least distance between the tops of a, then b
-    for (const layer of layers) {                                  // start: packed and centred on y = 0
-      layer.forEach((v, i) => { v.y = i ? layer[i - 1].y + sep(layer[i - 1], v) : 0; });
-      const last = layer[layer.length - 1];
-      const mid  = last ? (last.y + last.h) / 2 : 0;
-      layer.forEach(v => { v.y -= mid; });
-    }
-    const smooth = t => t * t * (3 - 2 * t);     // the curve's height profile along its run
     const place = layer => {            // weighted isotonic regression: closest positions that respect the gaps
       const n = layer.length;
       if (!n) return;
@@ -1426,7 +1598,6 @@ class DAGEditor {
         else for (let l = L - 1; l >= 0; l--) place(layers[l]);
       }
     };
-    settle(30);
 
     // 5. refinement. A long edge is drawn as a curve between its ports, and the lane reserved for it
     //    can end up on the wrong side of a node (the ordering above ignores node heights), so count
@@ -1434,47 +1605,97 @@ class DAGEditor {
     const cutThrough = () => {
       let hits = 0;
       for (const { u, fo, v, to } of longEdges) {
-        const g = this._edgeGeom({ x: u.layer * COL + W, y: u.y + fo }, { x: v.layer * COL, y: v.y + to });
-        const pts = [];
-        for (let k = 0; k <= 24; k++) {
-          const t = k / 24, m = 1 - t;
-          pts.push({ x: m*m*m*g.sx + 3*m*m*t*g.cx1 + 3*m*t*t*g.cx2 + t*t*t*g.ex,
-                     y: m*m*m*g.sy + 3*m*m*t*g.cy1 + 3*m*t*t*g.cy2 + t*t*t*g.ey });
+        const g = this._edgeGeomH({ x: u.layer * COL + W, y: u.y + fo }, { x: v.layer * COL, y: v.y + to });
+        const N = 24, px = new Array(N + 1), py = new Array(N + 1);
+        let lo = Infinity, hi = -Infinity;
+        for (let k = 0; k <= N; k++) {
+          const t = k / N, m = 1 - t;
+          px[k] = m*m*m*g.sx + 3*m*m*t*g.cx1 + 3*m*t*t*g.cx2 + t*t*t*g.ex;
+          py[k] = m*m*m*g.sy + 3*m*m*t*g.cy1 + 3*m*t*t*g.cy2 + t*t*t*g.ey;
+          if (py[k] < lo) lo = py[k];
+          if (py[k] > hi) hi = py[k];
         }
         for (let l = u.layer + 1; l < v.layer; l++) {
           const x0 = l * COL;
           for (const n of layers[l]) {
-            if (n.dummy) continue;
-            if (pts.some(q => q.x > x0 - 2 && q.x < x0 + W + 2 && q.y > n.y - 2 && q.y < n.y + n.h + 2)) hits++;
+            if (n.dummy || n.y > hi + 2 || n.y + n.h < lo - 2) continue;        // cannot touch it
+            for (let k = 0; k <= N; k++) {
+              if (px[k] > x0 - 2 && px[k] < x0 + W + 2 && py[k] > n.y - 2 && py[k] < n.y + n.h + 2) { hits++; break; }
+            }
           }
         }
       }
       return hits;
     };
     const score = () => 3 * cutThrough() + crossings();
-    const perTrial = 10 * (nVertices + nSegments) + crossCost + 100 * longEdges.length;
-    let bestScore = score(), budget = Math.min(400, Math.floor(2.5e6 / perTrial));   // bounded, so big graphs stay fast
-    const everything = layers.flat();
-    for (let round = 0; round < 3 && bestScore > 0 && budget > 0; round++) {
-      let improved = false;
+
+    // One complete attempt, from a given starting order: order the columns, place, refine.
+    const attempt = (keyOf, withSweeps = true) => {
       for (const layer of layers) {
-        for (let i = 0; i + 1 < layer.length && budget > 0; i++, budget--) {
-          const saved = everything.map(v => v.y);
-          const swap = () => { [layer[i], layer[i + 1]] = [layer[i + 1], layer[i]]; layer[i].order = i; layer[i + 1].order = i + 1; };
-          swap();
-          settle(10);
-          const sc = score();
-          if (sc < bestScore) { bestScore = sc; improved = true; }
-          else { swap(); everything.forEach((v, k) => { v.y = saved[k]; }); }
-        }
+        layer.sort((p, q) => (keyOf(p) - keyOf(q)) || (p.key - q.key));
+        layer.forEach((v, i) => { v.order = i; });
       }
-      if (!improved) break;
+      let bestOrder = layers.map(l => l.slice()), bestCrossings = crossings();
+      for (let it = 0; withSweeps && it < sweeps && bestCrossings > 0; it++) {
+        if (it % 2 === 0) for (let l = 1; l < L; l++) reorder(layers[l], true);
+        else for (let l = L - 2; l >= 0; l--) reorder(layers[l], false);
+        const c = crossings();
+        if (c < bestCrossings) { bestCrossings = c; bestOrder = layers.map(l => l.slice()); }
+      }
+      layers.forEach((layer, i) => { layer.splice(0, layer.length, ...bestOrder[i]); layer.forEach((v, k) => { v.order = k; }); });
+
+      for (const layer of layers) {                                // start: packed and centred on y = 0
+        layer.forEach((v, i) => { v.y = i ? layer[i - 1].y + sep(layer[i - 1], v) : 0; });
+        const last = layer[layer.length - 1];
+        const mid  = last ? (last.y + last.h) / 2 : 0;
+        layer.forEach(v => { v.y -= mid; });
+      }
+      settle(30);
+
+      let bestScore = score(), budget = trials;                    // bounded, so big graphs stay fast
+      const saved = new Array(everything.length);
+      for (let round = 0; round < 3 && bestScore > 0 && budget > 0; round++) {
+        let improved = false;
+        for (const layer of layers) {
+          for (let i = 0; i + 1 < layer.length && budget > 0; i++, budget--) {
+            for (let k = 0; k < everything.length; k++) saved[k] = everything[k].y;
+            const swap = () => { [layer[i], layer[i + 1]] = [layer[i + 1], layer[i]]; layer[i].order = i; layer[i + 1].order = i + 1; };
+            swap();
+            settle(10);
+            const sc = score();
+            if (sc < bestScore) { bestScore = sc; improved = true; }
+            else { swap(); everything.forEach((v, k) => { v.y = saved[k]; }); }
+          }
+        }
+        if (!improved) break;
+      }
+      settle(30);
+      return score();
+    };
+
+    // Try several starting orders and keep the best result; an attempt only wins by being strictly
+    // better, so the earlier ones win ties. First comes the current vertical order exactly as it
+    // is (no sweeps), so a layout that is already good is left alone and laying out again can only
+    // improve it; then the current order with sweeps, its reverse, and seeded shuffles (so it is
+    // repeatable), which rescue the cases where the current order is a poor start.
+    const shuffle = seed => { let t = seed >>> 0; const r = new Map();
+      for (const v of everything) r.set(v, ((t = (t * 1664525 + 1013904223) >>> 0) / 4294967296));
+      return v => r.get(v); };
+    const starts = nStarts === 1 ? [[v => v.key, true]]
+                 : [[v => v.key, false], [v => v.key, true], [v => -v.key, true]];
+    for (let k = 1; starts.length < nStarts; k++) starts.push([shuffle(k), true]);
+    let best = null;
+    for (const [keyOf, withSweeps] of starts.slice(0, nStarts)) {
+      const sc = attempt(keyOf, withSweeps);
+      if (!best || sc < best.score) best = { score: sc, order: layers.map(l => l.slice()), ys: everything.map(v => v.y) };
     }
-    settle(30);
+    layers.forEach((layer, i) => { layer.splice(0, layer.length, ...best.order[i]); layer.forEach((v, k) => { v.order = k; }); });
+    everything.forEach((v, k) => { v.y = best.ys[k]; });
 
     let minY = Infinity;
-    for (const v of real.values()) minY = Math.min(minY, v.y);
-    for (const [id, v] of real) targets.set(id, { x: v.layer * COL, y: v.y - minY });
+    for (const v of real.values()) minY = Math.min(minY, v.y + v.shift);
+    const cents = n => Math.round(n * 100) / 100;                   // 0.01 px: tidy exports, repeatable results
+    for (const [id, v] of real) targets.set(id, { x: cents(v.layer * COL), y: cents(v.y + v.shift - minY) });
     return targets;
   }
 
@@ -1515,19 +1736,17 @@ class DAGEditor {
   /**
    * Add a node programmatically.
    * @param {string} label
-   * @param {number} [x]
-   * @param {number} [y]
+   * @param {number} [x]  left, in the unflipped orientation (default: the middle of the view)
+   * @param {number} [y]  top, in the unflipped orientation
    * @param {object} [opts] - { inputs, outputs } port arrays
    * @returns {DAGNode}
    */
   addNode(label, x, y, opts = {}) {
     const r  = this._svgRect();
     const gp = this._clientToGraph(r.left + r.width / 2, r.top + r.height / 2);
-    return this._createNodeAt(
-      x !== undefined ? x : gp.x - DAGEditor._NODE_W / 2,
-      y !== undefined ? y : gp.y - DAGEditor._NODE_MIN_H / 2,
-      { label, ...opts }
-    );
+    if (x === undefined && y === undefined) return this._createNodeAtDisplay(gp.x, gp.y, { label, ...opts });
+    const c = this._modelTopLeftForCentre(gp.x, gp.y, DAGEditor._NODE_MIN_H);
+    return this._createNodeAt(x !== undefined ? x : c.x, y !== undefined ? y : c.y, { label, ...opts });
   }
 
   /** Add an edge. Returns true on success. */
@@ -1742,5 +1961,9 @@ class DAGEditor {
   }
 
   /** Remove the editor and clean up. */
-  destroy() { this._container.innerHTML = ''; }
+  destroy() {
+    if (this._resizeObserver) { this._resizeObserver.disconnect(); this._resizeObserver = null; }
+    if (this._windowResize)   { window.removeEventListener('resize', this._windowResize); this._windowResize = null; }
+    this._container.innerHTML = '';
+  }
 }

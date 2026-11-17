@@ -145,7 +145,9 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 - Nodes are sorted into **strata** (columns) by their longest-path depth from any root (stratum 0 = roots). Every node in a stratum has the same x, and strata are a fixed distance apart. Roots are on the left, leaves on the right, and every edge points left to right.
 - Within each stratum, nodes are ordered vertically to minimise edge crossings. Edges are considered port by port, so the order of a node's ports counts too.
-- **Nodes never overlap.** Within a stratum there is always a minimum gap between nodes, measured from each node's actual height, so nodes made tall by wrapped labels or many ports are accommodated.
+- **Nodes never overlap, in either orientation.** Within a stratum there is always a minimum gap between nodes, and strata are far enough apart, measured so that the same positions also work when the graph is shown flipped (§13): the room a node needs along its column is the larger of its unflipped height and its flipped width, and the distance between strata allows for the tallest flipped node.
+- The best of several attempts is kept (the current order as it stands, the current order with crossing-reduction sweeps, its reverse, and fixed-seed shuffles), so the result is good whatever the starting arrangement; the current order wins ties, so laying out a layout that is already good leaves it unchanged.
+- Positions are rounded to 0.01 px.
 - Connected ports are lined up horizontally where possible (edges tend toward horizontal), subject to the minimum gap.
 - An edge that spans more than one column should not cut through nodes in the columns it crosses: space is reserved for it between nodes, sized to how far the curve sweeps vertically across that column. Where this cannot be achieved, edges are drawn over nodes so they remain visible (§2.3).
 - The layout is anchored so its topmost node is at y = 0, so repeated layouts do not drift.
@@ -331,3 +333,27 @@ The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as 
 ### 12.5 README Screenshot
 
 - The README shows a screenshot of the demo directly under its title: the sample graph after its automatic layout, with one node selected so that the selection styling and the node editor pane are visible.
+
+---
+
+## 13. Orientation (Portrait Mode)
+
+### 13.1 When the graph is flipped
+
+- The graph is shown **flipped** when the container the editor is rendered in is strictly taller than it is wide, and unflipped otherwise (a square or empty container is unflipped).
+- Whenever the container is resized, the orientation is chosen again and the graph is **fitted to the new size and orientation**, even if the orientation did not change. Resizing never changes any node's position.
+
+### 13.2 What flipping looks like
+
+- The X and Y axes are swapped: **inputs are on the top edge** of each node, **outputs on the bottom edge**, and the **strata run from top to bottom**. Edges leave an output heading down and arrive at an input heading down, using the same curve rules as unflipped (including the 45° rule for edges that run more sideways than down), with arrowheads on the input end.
+- **Relative positions are kept**: each node's centre is transposed, so a node near the top of the pane when horizontal is near the left of the pane when vertical.
+- Ports that line up in the unflipped layout still line up when flipped (a port's position across the node is its unflipped offset from the node's centre).
+- Text is never mirrored. Node labels stay upright and wrap as usual. Port labels on a compact node (one character) stay upright beside their port; on a non-compact node they are turned to run along the node, starting at the port and reading into the body. Expanded nodes have a divider between the label and each port-label zone. Flipped nodes are at least 120 px wide and grow to fit their ports.
+- The compact / expanded rule is unchanged.
+
+### 13.3 Positions and export
+
+- `node.x` and `node.y` (and so every export, `getGraph()`, events, and the positions accepted by `addNode`, `fromJSON` and `loadGraph`) are **always in the unflipped orientation**, whatever is being shown. Flipping a graph and exporting it gives exactly the same data as before flipping.
+- Interaction works in the orientation shown, converted to and from unflipped positions: dragging a node follows the pointer; a node created by clicking, by dropping an edge on empty canvas, by double-clicking an edge, or by the New node button/key is centred where it was asked for; the draft edge, port highlighting, hit-testing and selection all use what is drawn.
+- `editor.flipped` reports whether the graph is currently shown flipped.
+
