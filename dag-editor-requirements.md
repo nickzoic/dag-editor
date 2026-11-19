@@ -52,7 +52,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - The spline starts at the surface of the output port dot and ends with an arrowhead whose tip touches the surface of the input port dot (accounting for the port stroke width).
 - An edge that is not routed (§5.5) is drawn as one spline. When the angle between the two ports is shallow (|Δy| ≤ |Δx|): the spline departs and arrives horizontally. Control handles are horizontal, length ≈ 35% of Δx (minimum 30 px).
 - When the angle is steep (|Δy| > |Δx|): the spline departs and arrives at 45° to horizontal. The path starts and ends at the port surface measured at 45°, and the control handles extend diagonally at 45°, length ≈ 35% of Δy (minimum 30 px).
-- A **routed** edge (§5.5) is drawn as a chain of splines through the lanes its layout gave it. Each piece leaves and arrives horizontally, so the path is flat across every column it passes through, at that lane's height, and rises or falls only in the gap between columns. Its arrowhead is on its last piece. Flipped (§13), the same chain runs down the screen.
+- A **long** edge (one that runs across one or more columns, §5.5) is drawn **straight**, from port to port, whenever nothing is in its way. Only if its straight line would pass through another node is it drawn through the lanes its layout gave it: a chain of splines, flat across each column at that lane's height, rising or falling only in the gap between columns. If the lanes are blocked too, it falls back to a single curve. An edge to the next column is drawn through the gap between the two columns. Arrowheads are on the last piece. Flipped (§13), the same drawing runs down the screen.
 - The arrowhead is backed off by half the port stroke-width so it meets the port edge cleanly.
 - Edges render on top of nodes so they are always visible even if layout forces a node underneath.
 - An unselected edge gets a slightly brighter stroke when hovered.
@@ -157,8 +157,8 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 ### 5.5 Edge Routes
 
 - A layout records the route of every edge that runs from one column to a later one: the points at the centres of the lanes it reserved in the columns between its ends (in unflipped coordinates). An edge between adjacent columns has no points, and its route is a single rise or fall in the gap between the columns.
-- A route is used for as long as it is still good. Two things make it good: the columns must still be the width they were laid out at, and the curve as drawn now must pass clear of every node except the two it joins.
-- So a node only affects the edges whose drawn curves it now lies across. A small move keeps every route. A node moved onto a lane drops only the route through that lane. Any edge whose route is no longer clear is drawn as a single curve (§2.3) until the next layout.
+- Each long edge has a route, made when the layout ran. The route is used only while it is still good: the columns must still be the width they were laid out at, and the curve as drawn now must pass clear of every node except the two it joins. A long edge is drawn straight in preference to its route, whenever the straight line is clear.
+- So a node only affects the edges whose drawn curves it now lies across. A small move keeps every route. A node moved onto a long edge's straight line makes that edge use its lanes; a node moved onto both its straight line and its lanes makes it a single curve (§2.3) until the next layout. Edges whose drawings it does not touch are unchanged.
 - A change that alters the column width (for example, a node that becomes taller than any other) drops every route, since the lanes are placed by it.
 - A relabel that changes nothing about the geometry keeps every route.
 - Undoing or redoing back to the laid-out state restores the routes, because they depend only on the positions, sizes and ports of nodes and on the edges.

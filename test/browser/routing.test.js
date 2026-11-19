@@ -44,41 +44,42 @@ describe('edge routes, as drawn in a real browser', () => {
     });
   }
 
-  it('a small drag keeps every route, and a drag that puts a node across a route drops only that route', async () => {
+  it('a small drag keeps every drawn route, and a node dragged onto a long edge\'s straight line changes only that edge', async () => {
     const page = await b.newPage({ width: 1440, height: 900 });
     await B.layoutDone(page);
-    const routedCount = () => page.evaluate(() => { const e = window.eval('editor');
-      return e.getGraph().edges.filter(x => e._routeFor(x) !== null).length; });
-    assert.equal(await routedCount(), 15);
+    const shapes = () => page.evaluate(() => { const e = window.eval('editor');
+      return Object.fromEntries(e.getGraph().edges.map(x => [x.id, e._edgeShape(x)])); });
+    const drawnCount = async () => Object.values(await shapes()).filter(v => v !== 'curve').length;
+    assert.equal(await drawnCount(), 15);
     const before = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('path.dag-edge')].map(p => [p.dataset.id, p.getAttribute('d')])));
 
     const r = await B.nodeRect(page, 'Warehouse');
     await page.mouse.move(r.cx, r.cy); await page.mouse.down(); await page.mouse.move(r.cx + 20, r.cy, { steps: 4 }); await page.mouse.up();
-    assert.equal(await routedCount(), 15, 'a small move of one node keeps every route');
+    assert.equal(await drawnCount(), 15, 'a small move of one node keeps every route drawn');
     const after = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('path.dag-edge')].map(p => [p.dataset.id, p.getAttribute('d')])));
     const moved = Object.keys(before).filter(id => before[id] !== after[id]);
     assert.ok(moved.length <= 3, `only the edges into Warehouse can have changed (${moved.join(', ')})`);
     assert.equal((await throughNodes(page)).bad, 0);
 
-    // drag Customers onto the lane of a long edge: the route it now lies across must be dropped
-    const lane = await page.evaluate(() => {
-      const e = window.eval('editor'), ctx = e._routeContext(), C = window.eval('DAGEditor');
+    // drag Customers onto the straight line of a long edge that is drawn straight: that edge must change
+    const aim = await page.evaluate(() => {
+      const e = window.eval('editor'), C = window.eval('DAGEditor');
       for (const ed of e.getGraph().edges) {
-        const segs = e._drawnRoute(ed, ctx);
-        if (!segs || segs.length < 3) continue;
-        const p = C._cubicAt(segs[1], 0.5), r = document.querySelector('.dag-svg').getBoundingClientRect();
+        if (e._edgeShape(ed) !== 'straight') continue;
+        const sg = e._edgeSegments(ed)[0], p = C._cubicAt(sg, 0.5), r = document.querySelector('.dag-svg').getBoundingClientRect();
         return { id: ed.id, x: r.x + e._viewX + p.x * e._scale, y: r.y + e._viewY + p.y * e._scale };
       }
       return null;
     });
-    assert.ok(lane, 'there is a routed edge with a lane to aim at');
+    assert.ok(aim, 'there is a long edge drawn straight to aim at');
     const c = await B.nodeRect(page, 'Customers');
-    await page.mouse.move(c.cx, c.cy); await page.mouse.down(); await page.mouse.move(lane.x, lane.y, { steps: 10 }); await page.mouse.up();
-    assert.ok(await routedCount() < 15, `a node moved onto the lane of ${lane.id} drops that route`);
+    await page.mouse.move(c.cx, c.cy); await page.mouse.down(); await page.mouse.move(aim.x, aim.y, { steps: 10 }); await page.mouse.up();
+    const now = await shapes();
+    assert.notEqual(now[aim.id], 'straight', `a node on ${aim.id}'s straight line means it no longer runs straight`);
 
     await page.click('[data-action="layout"]');
     await B.layoutDone(page); await B.sleep(200);
-    assert.equal(await routedCount(), 15);
+    assert.equal(await drawnCount(), 15);
     assert.equal((await throughNodes(page)).bad, 0);
     await b.closePage(page);
   });
