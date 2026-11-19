@@ -122,7 +122,7 @@ class DAGEditor {
     this._lastSnapKey = null;    // lets repeated edits of one field share an undo step
     this._lineCache   = new Map();   // "id|U" / "id|F" → { id, label, maxW, lines }  (wrapped label text)
     this._flipCache   = new Map();   // node id → { sig, g }  (geometry of the node when flipped)
-    this._routes      = null;        // { sig, paths }: edge routes from the last layout (see _routesValid)
+    this._routes      = new Map();   // edge id → { points, span, colW, dep }: routes from the last layout (see _routeFor)
     this._flipped     = false;       // shown with the axes swapped (container taller than wide)?
     this._resizeObserver = null;
 
@@ -600,9 +600,9 @@ class DAGEditor {
     }
 
     // --- edge click
-    const valid = this._routesValid();
+    const ctx = this._routeContext();
     for (const edge of this._edges.values()) {
-      if (this._edgeHitTest(edge, gp.x, gp.y, 7, valid)) {
+      if (this._edgeHitTest(edge, gp.x, gp.y, 7, ctx)) {
         this._setSelected('edge', edge.id);
         e.stopPropagation(); return;
       }
@@ -782,9 +782,9 @@ class DAGEditor {
     const gp = this._clientToGraph(e.clientX, e.clientY);
 
     // Edge: insert a new node at the click point and splice it in
-    const valid = this._routesValid();
+    const ctx = this._routeContext();
     for (const edge of this._edges.values()) {
-      if (!this._edgeHitTest(edge, gp.x, gp.y, 7, valid)) continue;
+      if (!this._edgeHitTest(edge, gp.x, gp.y, 7, ctx)) continue;
 
       const fromNode = this._nodes.get(edge.fromNodeId);
       const toNode   = this._nodes.get(edge.toNodeId);
@@ -839,43 +839,72 @@ class DAGEditor {
   /* ─────────────────── edge geometry ─────────────────── */
 
   /* Edge routes ─────────────────────────────────────────────────────────────
-   * Auto-layout gives every edge that spans several columns a route: the points where its curve
-   * passes through the lane the layout reserved for it in each column it crosses. The points are in
-   * model (unflipped) coordinates. A route is used only while the graph is exactly as the layout left
-   * it (the signature in _geomSig). Moving, editing or relabelling anything drops every route, and the
-   * edges go back to single curves until the next layout. Routes are not exported. */
+   * Auto-layout gives every edge that runs from one column to a later one a route: the points where its
+   * curve passes through the lane the layout reserved for it in each column it crosses. The points are in
+   * model (unflipped) coordinates.
+   *
+   * A route depends only on what it was laid out against, so each records its dependencies and is checked
+   * against them alone (see _routeFor):
+   *   • the two nodes it joins, with their sizes and ports;
+   *   • every other node whose horizontal extent overlaps the columns the route crosses (its "span"): a
+   *     node there could sit in a lane, or in a gap a rise passes through;
+   *   • the column width the points were computed with (colW), since it fixes where the columns are.
+   * Changing any of those drops that route, and the edge reverts to a single curve until the next layout.
+   * Anything else can change without touching it. Routes are not exported. */
 
-  /* A signature of everything a route depends on: where every node is, how big it is, and which edges
-   * join which ports. `positions` (id → {x, y}) gives the positions to assume; by default, the current ones. */
-  _geomSig(positions = null) {
-    let s = '';
-    for (const n of this._nodes.values()) {
-      const p = positions ? positions.get(n.id) : n;
-      const f = this._flipGeom(n);
-      s += `${n.id},${p.x},${p.y},${this._nodeHeight(n)},${f.w},${f.h};`;
-    }
-    for (const e of this._edges.values()) s += `${e.id},${e.fromNodeId},${e.fromPortId},${e.toNodeId},${e.toPortId};`;
-    return s;
+  /* What a node looks like for route purposes, at position p: where it is, how big it is, and its ports. */
+  _nodeGeo(n, p) {
+    const f = this._flipGeom(n);
+    const ports = `${n.inputs.map(q => q.id).join(',')}/${n.outputs.map(q => q.id).join(',')}`;
+    return `${p.x},${p.y},${this._nodeHeight(n)},${f.w},${f.h},${ports}`;
   }
 
-  /* Whether the routes from the last layout still describe the graph as it is now. */
-  _routesValid() { return !!this._routes && this._routes.sig === this._geomSig(); }
+  /* The width of a column: wide enough for a node and its lane, and for the tallest flipped node. Layout
+   * and routing both use it, so that the lanes of a route and the columns of the nodes agree. */
+  _columnWidth() {
+    const flipH = Math.max(0, ...[...this._nodes.values()].map(n => this._flipGeom(n).h));
+    return Math.max(DAGEditor._NODE_W + DAGEditor._LAYOUT_COL_GAP, flipH + DAGEditor._LAYOUT_NODE_GAP);
+  }
 
-  /* The points an edge's route passes through, in model coordinates, or null if it has none (or the
-   * graph has changed since it was laid out). `valid` lets a loop over many edges check only once. */
-  _routeFor(edge, valid = this._routesValid()) {
-    return valid ? (this._routes.paths.get(edge.id) || null) : null;
+  /* What a route on `edge` with horizontal extent `span` depends on, as a string: the edge's own ends, and the
+   * geometry of every node that joins it or overlaps its span. `nodes` is [{ id, x, s }], in node order, where s
+   * is the node's _nodeGeo at x. Built from the layout's positions when a route is made, and from the current
+   * positions when it is checked (see _routeContext). */
+  _depSig(edge, span, nodes) {
+    const W = DAGEditor._NODE_W;
+    let sig = `${edge.fromPortId}>${edge.toPortId};`;
+    for (const n of nodes) {
+      const joins = n.id === edge.fromNodeId || n.id === edge.toNodeId;
+      if (joins || (n.x < span[1] && n.x + W > span[0])) sig += `${n.id}|${n.s};`;
+    }
+    return sig;
+  }
+
+  /* What the route checks need, gathered once per drawing pass rather than once per edge: the column width,
+   * and each node's position and geometry. */
+  _routeContext() {
+    const nodes = [];
+    for (const n of this._nodes.values()) nodes.push({ id: n.id, x: n.x, s: this._nodeGeo(n, n) });
+    return { colW: this._columnWidth(), nodes };
+  }
+
+  /* The route for an edge as it stands now: its points, or null if there is none, or its dependencies have
+   * changed since it was laid out. `ctx` (from _routeContext) lets a loop over many edges gather things once. */
+  _routeFor(edge, ctx = this._routeContext()) {
+    const r = this._routes.get(edge.id);
+    if (!r || r.colW !== ctx.colW) return null;
+    return this._depSig(edge, r.span, ctx.nodes) === r.dep ? r.points : null;
   }
 
   /* The cubic Bézier segments that draw an edge, in display coordinates: [{ s, c1, c2, e }, …].
-   * An unrouted edge is one segment, the single curve from _edgeGeom. A routed edge is one segment
-   * between each pair of consecutive points (its ports, then its route, then its other port), each
-   * leaving and arriving horizontally in model terms, so the curve runs through each lane's centre
-   * smoothly. Flipped, every point is transposed, so the flow runs down the screen. */
-  _edgeSegments(edge, valid = this._routesValid()) {
+   * An unrouted edge (or one whose route has gone stale) is one segment, the single curve from _edgeGeom.
+   * A routed edge is one segment per piece of its route, each leaving and arriving horizontally in model
+   * terms, so the curve runs through each lane's centre smoothly. Flipped, every point is transposed, so the
+   * flow runs down the screen. */
+  _edgeSegments(edge, ctx = this._routeContext()) {
     const p1 = this._edgeP1(edge), p2 = this._edgeP2(edge);
     if (!p1 || !p2) return null;
-    const route = this._routeFor(edge, valid);
+    const route = this._routeFor(edge, ctx);
     const routed = route && this._routedSegments(p1, p2, route);
     if (routed) return routed;
     const g = this._edgeGeom(p1, p2);
@@ -919,8 +948,8 @@ class DAGEditor {
     };
   }
 
-  _edgeHitTest(edge, gx, gy, tol = 7, valid = this._routesValid()) {
-    const segs = this._edgeSegments(edge, valid);
+  _edgeHitTest(edge, gx, gy, tol = 7, ctx = this._routeContext()) {
+    const segs = this._edgeSegments(edge, ctx);
     if (!segs) return false;
     for (const sg of segs) {
       for (let t = 0; t <= 1; t += 0.05) {
@@ -1015,8 +1044,8 @@ class DAGEditor {
     };
   }
 
-  _edgePath(edge, valid = this._routesValid()) {
-    const segs = this._edgeSegments(edge, valid);
+  _edgePath(edge, ctx = this._routeContext()) {
+    const segs = this._edgeSegments(edge, ctx);
     if (!segs) return '';
     const at = p => `${p.x},${p.y}`;
     return `M${at(segs[0].s)}` + segs.map(sg => ` C${at(sg.c1)} ${at(sg.c2)} ${at(sg.e)}`).join('');
@@ -1283,7 +1312,7 @@ class DAGEditor {
       if (el === this._draftLine) continue;
       if (!existing.has(el.dataset.id)) el.remove();
     }
-    const valid = this._routesValid();              // one check for every edge
+    const ctx = this._routeContext();               // the route checks gather this once, not per edge
     for (const edge of this._edges.values()) {
       const sel = this._selected?.kind === 'edge' && this._selected.id === edge.id;
       let el = this._gEdges.querySelector(`[data-id="${edge.id}"]`);
@@ -1293,7 +1322,7 @@ class DAGEditor {
         el.setAttribute('fill', 'none');
         this._gEdges.appendChild(el);
       }
-      el.setAttribute('d', this._edgePath(edge, valid));
+      el.setAttribute('d', this._edgePath(edge, ctx));
       el.setAttribute('class', sel ? 'dag-edge dag-edge--selected' : 'dag-edge');
       el.setAttribute('marker-end', sel ? 'url(#dag-arrow-sel)' : 'url(#dag-arrow)');
     }
@@ -1536,15 +1565,14 @@ class DAGEditor {
   _computeLayoutTargets() {
     const targets = new Map();
     const nodes = [...this._nodes.values()];
-    this._routes = null;
+    this._routes = new Map();
     if (!nodes.length) return targets;
 
     const W = DAGEditor._NODE_W, GAP = DAGEditor._LAYOUT_NODE_GAP;
     // The layout is worked out in model (unflipped) coordinates, but the same positions are shown
     // flipped when the container is taller than wide, where a node's width runs along its column
     // and its height across the columns. So leave room for the larger of the two in each direction.
-    const flipH = Math.max(0, ...nodes.map(n => this._flipGeom(n).h));
-    const COL = Math.max(W + DAGEditor._LAYOUT_COL_GAP, flipH + GAP);
+    const COL = this._columnWidth();
     // A lane is only as tall as the route it carries: the route runs flat across the column (see
     // _routeSegments), and only rises or falls in the gap between columns, which holds no nodes.
     const DUMMY_H = 6, DUMMY_PAD = 8;
@@ -1810,13 +1838,19 @@ class DAGEditor {
     const cents = n => Math.round(n * 100) / 100;                   // 0.01 px: tidy exports, repeatable results
     for (const [id, v] of real) targets.set(id, { x: cents(v.layer * COL), y: cents(v.y + v.shift - minY) });
 
-    // Routes: through the centre of each lane, at each column's centre, in model coordinates. They are
-    // valid for the arrangement this layout is heading for (see _routesValid), so they apply once it lands.
-    const paths = new Map();
-    for (const { edge, chain } of routedEdges) {
-      paths.set(edge.id, chain.map(d => ({ x: cents(d.layer * COL + W / 2), y: cents(d.y + d.h / 2 - minY) })));
+    // Routes: through the centre of each lane, at each column's centre, in model coordinates. Each is valid for
+    // the arrangement this layout is heading for (see _routeFor), so it applies as the nodes land on it.
+    const routes = new Map();
+    const layoutNodes = nodes.map(n => ({ id: n.id, x: targets.get(n.id).x, s: this._nodeGeo(n, targets.get(n.id)) }));
+    for (const { edge, chain, u, v } of routedEdges) {
+      const span = [u.layer * COL, v.layer * COL + W];
+      routes.set(edge.id, {
+        points: chain.map(d => ({ x: cents(d.layer * COL + W / 2), y: cents(d.y + d.h / 2 - minY) })),
+        span, colW: COL,
+        dep: this._depSig(edge, span, layoutNodes),
+      });
     }
-    this._routes = { sig: this._geomSig(targets), paths };
+    this._routes = routes;
     return targets;
   }
 

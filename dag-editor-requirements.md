@@ -157,8 +157,14 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 ### 5.5 Edge Routes
 
 - A layout records the route of every edge that runs from one column to a later one: the points at the centres of the lanes it reserved in the columns between its ends (in unflipped coordinates). An edge between adjacent columns has no points, and its route is a single rise or fall in the gap between the columns.
-- A route is used only while the graph is exactly as the layout left it. Moving any node, adding or removing an edge or port, or relabelling anything that changes a node's size drops **all** routes, and every edge reverts to a single curve (§2.3) until the next layout. A relabel that changes nothing about the geometry keeps them.
-- Undoing or redoing back to the laid-out state restores the routes, because they depend only on the positions and sizes of the nodes and on the edges.
+- Each route records what it depends on, and is used only while those things are as the layout left them:
+  - the two nodes it joins, with their sizes and ports;
+  - every other node whose horizontal extent overlaps the columns the route crosses (its span), since such a node could sit in one of the route's lanes, or in a gap it rises through;
+  - the column width, which fixes where the columns are.
+- Changing any of these drops that route, and its edge reverts to a single curve (§2.3) until the next layout. Anything else can change without affecting it: moving a node outside an edge's span leaves that edge's route, and its drawing, exactly as they were. Adding an edge leaves other routes alone, and the new edge has no route until the next layout.
+- A change that alters the column width (for example, a node that becomes taller than any other) drops every route, since the lanes are placed by it.
+- A relabel that changes nothing about the geometry keeps every route.
+- Undoing or redoing back to the laid-out state restores the routes, because they depend only on the positions, sizes and ports of nodes and on the edges.
 - Routes are not exported. A graph imported from JSON is drawn with single curves until it is laid out.
 - The layout treats routes as it draws them: the search for a good arrangement counts the routes that cut through a node, so the arrangement it keeps is one whose routes are clear.
 

@@ -44,23 +44,25 @@ describe('edge routes, as drawn in a real browser', () => {
     });
   }
 
-  it('after a node is moved the routes go, and Layout brings them back, all visibly', async () => {
+  it('moving a node drops only the routes that depend on it; Layout brings them all back', async () => {
     const page = await b.newPage({ width: 1440, height: 900 });
     await B.layoutDone(page);
-    const laidOut = await page.evaluate(() => [...document.querySelectorAll('path.dag-edge')].map(p => p.getAttribute('d')));
-    assert.equal(await page.evaluate(() => window.eval('editor')._routesValid()), true);
+    const routedCount = () => page.evaluate(() => { const e = window.eval('editor');
+      return e.getGraph().edges.filter(x => e._routeFor(x) !== null).length; });
+    const multi = () => page.evaluate(() => [...document.querySelectorAll('path.dag-edge')].filter(p => (p.getAttribute('d').match(/C/g) || []).length > 1).length);
+    assert.equal(await routedCount(), 15);
+    const before = await multi();
 
     const r = await B.nodeRect(page, 'Warehouse');
     await page.mouse.move(r.cx, r.cy); await page.mouse.down(); await page.mouse.move(r.cx + 20, r.cy, { steps: 4 }); await page.mouse.up();
-    assert.equal(await page.evaluate(() => window.eval('editor')._routesValid()), false);
-    const single = await page.evaluate(() => [...document.querySelectorAll('path.dag-edge')].every(p => (p.getAttribute('d').match(/C/g) || []).length === 1));
-    assert.equal(single, true, 'every edge is a single curve until the next layout');
+    const after = await routedCount();
+    assert.ok(after < 15 && after >= 12, `only the edges into Warehouse lose their routes (${15 - after} did)`);
+    assert.ok(await multi() > 0 && await multi() < before, 'routes elsewhere in the graph are still drawn through their lanes');
 
     await page.click('[data-action="layout"]');
     await B.layoutDone(page); await B.sleep(200);
-    assert.equal(await page.evaluate(() => window.eval('editor')._routesValid()), true);
-    const again = await page.evaluate(() => [...document.querySelectorAll('path.dag-edge')].map(p => p.getAttribute('d')));
-    assert.ok(again.some(d => (d.match(/C/g) || []).length > 1));
+    assert.equal(await routedCount(), 15);
+    assert.equal(await multi(), before);
     assert.equal((await throughNodes(page)).bad, 0);
     await b.closePage(page);
   });

@@ -30,29 +30,28 @@ function laidOut(g, opts = {}) {
 describe('routes from auto-layout', () => {
   let env, editor;
   beforeEach(() => { env = laidOut(chain()); editor = env.editor; });
+  const edge = id => editor.getGraph().edges.find(e => e.id === id);
 
-  it('a settled layout has valid routes for every edge', () => {
-    assert.equal(editor._routesValid(), true);
+  it('after a layout every edge has a route, and each route is valid for the graph as it is', () => {
     for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null, `${e.id} has a route`);
   });
 
   it('an edge to the next column has no lanes to pass; an edge skipping columns has one point per column in between', () => {
-    const route = id => editor._routeFor(editor.getGraph().edges.find(e => e.id === id));
-    assert.equal(route('ab').length, 0);
-    assert.equal(route('cd').length, 0);
-    assert.equal(route('ad').length, 2, 'a → d skips the columns of b and c');
+    assert.equal(editor._routeFor(edge('ab')).length, 0);
+    assert.equal(editor._routeFor(edge('cd')).length, 0);
+    assert.equal(editor._routeFor(edge('ad')).length, 2, 'a → d skips the columns of b and c');
   });
 
   it('each point is at the centre of its column, and the points run left to right', () => {
-    const e = editor.getGraph().edges.find(x => x.id === 'ad'), pts = editor._routeFor(e);
+    const pts = editor._routeFor(edge('ad'));
     const node = id => editor.getGraph().nodes.find(n => n.id === id);
     near(pts[0].x, node('b').x + W / 2);                 // column 1 holds b
     near(pts[1].x, node('c').x + W / 2);                 // column 2 holds c
     assert.ok(pts[1].x > pts[0].x && pts[0].x > node('a').x + W);
   });
 
-  it('the points are lane centres inside the layout, at finite positions with two decimals at most', () => {
-    for (const pts of editor._routes.paths.values()) for (const p of pts) {
+  it('the points are lane centres at finite positions with two decimals at most', () => {
+    for (const r of editor._routes.values()) for (const p of r.points) {
       assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
       near(p.x, Math.round(p.x * 100) / 100); near(p.y, Math.round(p.y * 100) / 100);
     }
@@ -65,26 +64,21 @@ describe('routes from auto-layout', () => {
   });
 
   it('is flat across each column it passes through, so it stays in the lane', () => {
-    const e = editor.getGraph().edges.find(x => x.id === 'ad');
-    const segs = editor._edgeSegments(e);
-    const pts = editor._routeFor(e);
-    // the middle of the first column: the flat piece through the lane has the lane's height exactly
-    const mid = segs[1];                             // flat piece from pts[0]-half to pts[0]+half
+    const segs = editor._edgeSegments(edge('ad')), pts = editor._routeFor(edge('ad'));
+    const mid = segs[1];                                 // the flat piece through the first lane
     for (const t of [0, 0.25, 0.5, 0.75, 1]) near(cubicAt(mid, t).y, pts[0].y, 1e-9);
   });
 
   it('leaves and arrives horizontally, on the port surfaces', () => {
-    const e = editor.getGraph().edges.find(x => x.id === 'ad');
-    const segs = editor._edgeSegments(e), first = segs[0], last = segs[segs.length - 1];
+    const segs = editor._edgeSegments(edge('ad')), first = segs[0], last = segs[segs.length - 1];
     near(first.c1.y, first.s.y); near(last.c2.y, last.e.y);
-    assert.ok(first.s.x > editor._edgeP1(e).x && last.e.x < editor._edgeP2(e).x);
+    assert.ok(first.s.x > editor._edgeP1(edge('ad')).x && last.e.x < editor._edgeP2(edge('ad')).x);
   });
 
   it('hit-testing finds the route where it is drawn, and not a few pixels away from it', () => {
-    const e = editor.getGraph().edges.find(x => x.id === 'ad');
-    const p = cubicAt(editor._edgeSegments(e)[1], 0.5);
-    assert.equal(editor._edgeHitTest(e, p.x, p.y), true);
-    assert.equal(editor._edgeHitTest(e, p.x, p.y + 20), false);
+    const p = cubicAt(editor._edgeSegments(edge('ad'))[1], 0.5);
+    assert.equal(editor._edgeHitTest(edge('ad'), p.x, p.y), true);
+    assert.equal(editor._edgeHitTest(edge('ad'), p.x, p.y + 20), false);
   });
 
   it('the arrowhead is still on the end of the path', () => {
@@ -92,92 +86,108 @@ describe('routes from auto-layout', () => {
   });
 
   it('the export has no routes in it', () => {
-    assert.ok(!/route|lane|waypoint|path/i.test(editor.exportJSON()));
+    assert.ok(!/route|lane|waypoint|path|span|dep/i.test(editor.exportJSON()));
     same(Object.keys(editor.toJSON()).sort(), ['edges', 'nodes', 'version']);
   });
 
-  it('importing the export draws the edges as single curves until the next layout', () => {
+  it('importing the export draws every edge as a single curve until the next layout', () => {
     const other = createEnv().editor;
     other.importJSON(editor.exportJSON());
-    assert.equal(other._routesValid(), false);
+    for (const e of other.getGraph().edges) assert.equal(other._routeFor(e), null);
     other.autoLayout(true);
     other.autoLayout(false);
     assert.equal(other.exportJSON(), editor.exportJSON());
   });
 });
 
-describe('routes are dropped when the graph changes', () => {
-  let env, editor, ad, before;
-  beforeEach(() => {
-    env = laidOut(chain()); editor = env.editor;
-    ad = () => editor.getGraph().edges.find(e => e.id === 'ad');
-    before = env.document.querySelector('path[data-id="ad"]').getAttribute('d');
+describe('routes are dropped per edge, when what they depend on changes', () => {
+  let env, editor;
+  const edge = id => editor.getGraph().edges.find(e => e.id === id);
+  const node = id => editor.getGraph().nodes.find(n => n.id === id);
+  const routed = id => editor._routeFor(edge(id)) !== null;
+  const curves = id => C(env.document.querySelector(`path[data-id="${id}"]`));
+  beforeEach(() => { env = laidOut(chain()); editor = env.editor; });
+
+  it('moving a node drops the routes of the edges it joins, and leaves the others exactly as they were drawn', () => {
+    const bcBefore = env.document.querySelector('path[data-id="bc"]').getAttribute('d');
+    node('a').y += 3; editor._render();                  // a joins ab and ad; cd and bc do not involve it
+    assert.equal(routed('ab'), false);
+    assert.equal(routed('ad'), false);
+    assert.equal(routed('bc'), true, 'bc spans columns 1–2, which a is not in');
+    assert.equal(routed('cd'), true);
+    assert.equal(curves('ad'), 1, 'the dropped route is drawn as a single curve');
+    assert.equal(env.document.querySelector('path[data-id="bc"]').getAttribute('d'), bcBefore, 'bc is drawn just as before');
   });
 
-  it('moving any node, even one the route does not touch, makes every edge a single curve', () => {
-    assert.equal(C(env.document.querySelector('path[data-id="ad"]')), 5);
-    editor.getGraph().nodes.find(n => n.id === 'b').y += 3;
-    env.editor._render();
-    assert.equal(editor._routesValid(), false);
-    assert.equal(editor._edgeSegments(ad()).length, 1);
-    assert.equal(C(env.document.querySelector('path[data-id="ad"]')), 1);
+  it('moving a node in the middle of an edge\'s span drops that edge too, though the node is not its end', () => {
+    node('b').y += 3; editor._render();                  // b lies in ad's span, and joins ab and bc
+    assert.equal(routed('ad'), false, 'b sits in a lane of ad');
+    assert.equal(routed('cd'), true, 'cd does not cross column 1');
+  });
+
+  it('a node moved into the columns an edge crosses drops that edge', () => {
+    const colW = editor._columnWidth();
+    assert.equal(routed('bc'), true);
+    node('a').x = 2 * colW; editor._render();            // a now sits in column 2, under bc's span
+    assert.equal(routed('bc'), false);
+  });
+
+  it('a change to the column width drops every route, since the lanes are placed by it', () => {
+    const before = editor._columnWidth();
+    editor.setNodeLabel('d', 'word '.repeat(60));       // a tall node raises the column pitch
+    assert.ok(editor._columnWidth() > before);
+    for (const e of editor.getGraph().edges) assert.equal(editor._routeFor(e), null);
+    editor.setNodeLabel('d', 'D');                       // back to the old width: the routes are valid again
+    assert.equal(routed('bc'), true);
+  });
+
+  it('a port change that resizes an endpoint drops its routes', () => {
+    editor.setPortLabel('b', 'input', 'in', 'a much longer port label');
+    assert.equal(routed('bc'), false);
+    assert.equal(routed('ab'), false);
+    assert.equal(routed('cd'), true);
+  });
+
+  it('a relabel that changes nothing about the geometry keeps every route', () => {
+    editor.setNodeLabel('b', 'Renamed');                 // one short line: the same size, so the same layout
+    for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null);
+  });
+
+  it('adding an edge leaves the routes of the others alone, and gives the new edge none', () => {
+    editor.addEdge('b', 'out', 'd', 'in');
+    assert.equal(routed('ad'), true);
+    assert.equal(editor._routeFor(editor.getGraph().edges.at(-1)), null);
   });
 
   it('undoing a recorded change to the positions brings the routes back', () => {
     editor._snapshot();                                  // the laid-out state
-    editor.getGraph().nodes.find(n => n.id === 'b').y += 3;
+    node('b').y += 3;
     editor._snapshot();
-    assert.equal(editor._routesValid(), false);
+    assert.equal(routed('ad'), false);
     editor.undo();
-    assert.equal(editor._routesValid(), true);
-    assert.equal(C(env.document.querySelector('path[data-id="ad"]')), 5);
+    assert.equal(routed('ad'), true);
+    assert.equal(curves('ad'), 5);
   });
 
-  it('a layout that has been undone draws single curves again, and one redone draws routes', () => {
-    editor.undo();
-    assert.equal(editor._routesValid(), false);
-    editor.redo();
-    assert.equal(editor._routesValid(), true);
-    assert.equal(env.document.querySelector('path[data-id="ad"]').getAttribute('d'), before);
-  });
-
-  it('adding an edge drops the routes', () => {
-    editor.addEdge('b', 'out', 'd', 'in');
-    assert.equal(editor._routesValid(), false);
-  });
-
-  it('a relabel that changes a node\'s size drops them; one that changes nothing about the geometry keeps them', () => {
-    editor.setNodeLabel('b', 'Renamed');                 // one short line: the same size, so the same layout
-    assert.equal(editor._routesValid(), true);
-    editor.setNodeLabel('b', 'a much longer node label that has to wrap onto several lines');
-    assert.equal(editor._routesValid(), false);
-  });
-
-  it('a port change that resizes a node drops the routes', () => {
-    editor.setPortLabel('b', 'input', 'in', 'a much longer port label');
-    assert.equal(editor._routesValid(), false);
-  });
-
-  it('laying out again restores them', () => {
-    editor.getGraph().nodes.find(n => n.id === 'b').y += 30;
+  it('laying out again restores every route', () => {
+    node('b').y += 30;
     editor.autoLayout(true); env.settle();
-    assert.equal(editor._routesValid(), true);
-    assert.equal(C(env.document.querySelector('path[data-id="ad"]')), 5);
+    for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null);
   });
 
-  it('a layout that is interrupted before it lands does not use its routes', () => {
-    editor.getGraph().nodes.find(n => n.id === 'b').y += 300;
+  it('a layout that is interrupted before it lands leaves the routes of the nodes it moved without a route', () => {
+    node('a').y += 300;
     editor.autoLayout(true); env.clock.advance(60);
     assert.equal(editor._layoutActive, true);
-    assert.equal(editor._routesValid(), false);
+    assert.equal(routed('ad'), false);
     editor.autoLayout(false);
-    assert.equal(editor._routesValid(), false);
+    assert.equal(routed('ad'), false);
   });
 
   it('a route that cannot be drawn falls back to the single curve, not a broken path', () => {
-    editor._routes.paths.set('ad', [{ x: 9999, y: 0 }, { x: 0, y: 0 }]);     // runs backwards
-    assert.equal(editor._routeFor(ad()).length, 2);
-    assert.equal(editor._edgeSegments(ad()).length, 1);
+    editor._routes.get('ad').points = [{ x: 9999, y: 0 }, { x: 0, y: 0 }];     // runs backwards
+    assert.equal(editor._routeFor(edge('ad')).length, 2);
+    assert.equal(editor._edgeSegments(edge('ad')).length, 1);
   });
 });
 
@@ -261,13 +271,11 @@ describe('routes on random graphs', () => {
       editor.loadGraph(randomGraph(seed, 2, 30));
       const T = editor._computeLayoutTargets();
       for (const n of editor.getGraph().nodes) { n.x = T.get(n.id).x; n.y = T.get(n.id).y; }
-      const valid = editor._routesValid();
-      assert.ok(valid, 'the layout is valid for the arrangement it produced');
+      for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null, 'every edge is routed after layout');
       for (const flipped of [false, true]) {
         editor._flipped = flipped;
         const boxes = new Map(editor.getGraph().nodes.map(n => [n.id, editor._boxOf(n)]));
         for (const e of editor.getGraph().edges) {
-          if (editor._routeFor(e, true)) assert.ok(editor._edgeSegments(e, true).length >= 1);
           for (const q of samplesOf(editor, e)) {
             for (const [id, b] of boxes) {
               if (id === e.fromNodeId || id === e.toNodeId) continue;

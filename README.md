@@ -116,7 +116,7 @@ If the container is **taller than it is wide**, the graph is shown *flipped*: th
 
 Click **⟳ Layout** (or press `L`) for a one-shot animated layout. Nodes are arranged in columns left to right by their depth in the graph, ordered within each column to reduce edge crossings, and positioned so connected ports line up. Nodes never overlap. An edge that runs across several columns is given a lane through each column it crosses, and is drawn through those lanes, so it does not cut across the nodes in between; each edge rises or falls only in the gaps between columns. The nodes glide into place (about half a second) while the view stays fitted to the window. The result is deterministic: the same graph and arrangement always lay out the same way.
 
-Edge routes exist only until the graph changes: moving, adding or removing anything drops them, so those edges are drawn as single curves until you lay out again. The routes are not saved in the exported JSON.
+A route is kept for as long as the things it was laid out against stay put: the two nodes it joins, and any node in the columns it crosses. Moving one of those drops that edge's route, so it is drawn as a single curve until you lay out again; edges elsewhere keep their routes. The routes are not saved in the exported JSON.
 
 **Double-click** the Layout button (or press `Shift+L`) to **pin** auto-layout: the graph will re-layout automatically whenever edges are added or removed. The button pulses teal while pinned.
 
