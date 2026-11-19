@@ -28,16 +28,15 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs. Dr
 
 <script src="dag-editor.js"></script>
 <script>
-  const editor = new DAGEditor(
-    document.getElementById('my-graph'),
-    (event) => {
-      console.log(event.type, event.node ?? event.edge);
-    }
-  );
+  // Subclass to react to what happens (see Hooks below)
+  class MyEditor extends DAGEditor {
+    onMoveNode(node) { console.log('moved', node.id, node.x, node.y); }
+  }
+  const editor = new MyEditor(document.getElementById('my-graph'));
 </script>
 ```
 
-Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example. It opens with a 12-node sample graph — chosen to show nodes with no, one and several inputs and outputs, compact and expanded nodes, and labelled and unlabelled ports — which is laid out automatically once it has loaded. The graph editor fills the page height, with a **node editor pane** below it (edit the selected node's label and add, remove and label its ports), plus an event log and JSON import/export.
+Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.css` in the same folder) to see a fully working example. It opens with a 12-node sample graph — chosen to show nodes with no, one and several inputs and outputs, compact and expanded nodes, and labelled and unlabelled ports — which is laid out automatically once it has loaded. The graph editor fills the page height, with a **node editor pane** below it (edit the selected node's label and add, remove and label its ports), plus an event log and JSON import/export. The toolbar and hint bar above and below the graph belong to the demo page, not the editor: the editor is just the canvas, and reports what happens through hooks.
 
 ---
 
@@ -118,7 +117,7 @@ Click **⟳ Layout** (or press `L`) for a one-shot animated layout. Nodes are ar
 
 A long edge stays straight while its straight line is clear of the other nodes, and uses its lanes otherwise. So moving a node only affects the edges whose drawn curves it now lies across: a small move changes nothing, and a node moved onto an edge's straight line makes that edge use its lanes. If the lanes are blocked too, the edge is drawn as a single curve until you lay out again. The routes are not saved in the exported JSON.
 
-**Double-click** the Layout button (or press `Shift+L`) to **pin** auto-layout: the graph will re-layout automatically whenever edges are added or removed. The button pulses teal while pinned.
+**Double-click** the Layout button (or press `Shift+L`) to **pin** auto-layout: the graph will re-layout automatically whenever edges are added or removed. The demo page's Layout button shows whether a run is in progress and whether it is pinned.
 
 ---
 
@@ -127,20 +126,53 @@ A long edge stays straight while its straight line is clear of the other nodes, 
 ### Constructor
 
 ```js
-const editor = new DAGEditor(containerEl, onChange);
+const editor = new DAGEditor(containerEl);
 ```
 
-- `containerEl` — any `HTMLElement`. The editor fills it.
-- `onChange(event)` — called on every graph change (see Events below).
+- `containerEl` — any `HTMLElement`. The editor fills it. The editor draws only the canvas: no toolbar, no hint bar. Those belong to the host page, which calls the methods below and overrides the hooks.
+
+### Hooks
+
+The editor reports what happens by calling methods on itself. They do nothing by default. A host page overrides the ones it needs, either by subclassing or on an instance:
+
+```js
+class MyEditor extends DAGEditor {
+  onAddNode(node)      { save(); }
+  onMoveNode(node)     { console.log(node.label, 'moved to', node.x, node.y); }
+}
+
+// or, on one instance:
+editor.onNotice = message => showToast(message);
+```
+
+| Hook | Called when |
+|------|-------------|
+| `onAddNode(node)` | a node is added |
+| `onDeleteNode(node)` | a node is deleted (its edges are reported first) |
+| `onSelectNode(node)` / `onDeselectNode(node)` | a node becomes selected / stops being selected |
+| `onSelectEdge(edge)` / `onDeselectEdge(edge)` | an edge becomes selected / stops being selected |
+| `onUpdateNode(node)` | a node's label, or one of its ports, changes |
+| `onAddEdge(edge)` | an edge is added |
+| `onDeleteEdge(edge)` | an edge is deleted (directly, with its node or port, or spliced out) |
+| `onMoveNode(node)` | the user drags a node and lets go, once per drag, and only if it moved (automatic layout does not call it) |
+| `onNotice(message)` | there is something to tell the user, such as why an edge was refused |
+| `onLayoutChange(active)` | an auto-layout run starts (`true`) or stops (`false`) |
+| `onPinChange(pinned)` | pinned auto-layout is switched on or off |
+
+Each hook is called after the change, so the editor can be queried from inside it. Selecting a node, for example, makes `getGraph()` and `selected` already reflect it. `DAGNode` has `id`, `label`, `x`, `y`, `inputs[]` and `outputs[]`; `DAGEdge` has `id`, `fromNodeId`, `fromPortId`, `toNodeId` and `toPortId`. Positions in the hooks and in `getGraph()` are in the editor's own units (see JSON Schema for exported positions).
+
+Removing a port that has edges reports `onDeleteEdge` for each, then `onUpdateNode`.
 
 ### Methods
 
 ```js
 // Graph manipulation
-editor.addNode(label, x?, y?, { inputs?, outputs? })  // → DAGNode
+editor.addNode(label, x?, y?, { inputs?, outputs? })  // → DAGNode (no position: the middle of the view)
+editor.addNodeAtCentre()                              // → DAGNode, offset from the last one
 editor.addEdge(fromNodeId, fromPortId, toNodeId, toPortId)  // → boolean
 editor.deleteNode(id)
 editor.deleteEdge(id)
+editor.deleteSelected()                               // the selected node or edge
 
 // Node and port editing  (direction is 'input' or 'output')
 editor.setNodeLabel(nodeId, label)                    // → boolean
@@ -149,39 +181,27 @@ editor.removePort(nodeId, direction, portId)          // → boolean; removes at
 editor.setPortLabel(nodeId, direction, portId, label) // → boolean
 
 // Query
-editor.getGraph()  // → { nodes: DAGNode[], edges: DAGEdge[] }
+editor.getGraph()    // → { nodes: DAGNode[], edges: DAGEdge[] }
+editor.selected      // → { kind: 'node' | 'edge', id } or null
+editor.flipped       // true while the graph is shown flipped (container taller than wide)
 
 // Import / export
-editor.toJSON()          // → plain object (schema v2)
-editor.fromJSON(data)    // load from plain object → this
+editor.toJSON()             // → plain object (schema v3, positions normalised)
+editor.fromJSON(data)       // load from a plain object → this
 editor.exportJSON(indent?)  // → JSON string
 editor.importJSON(json)     // parse and load → this
-editor.loadGraph(data)   // load plain object (v1 or v2), fit view
+editor.loadGraph(data)      // load a plain object (v1, v2 or v3), fit view
 
-// View
-editor.autoLayout(active)  // programmatic layout control
-editor.flipped             // true while the graph is shown flipped (container taller than wide)
+// View and layout
+editor.fitView()                    // fit the whole graph to the view
+editor.autoLayout(active)           // start or stop an auto-layout run
+editor.layoutActive                 // true while a run is in progress
+editor.layoutPinned                 // true while pinned
+editor.setLayoutPinned(on)          // pin or unpin (as Shift+L)
 editor.undo()
 editor.redo()
-editor.destroy()           // remove all DOM
+editor.destroy()                    // remove all DOM
 ```
-
-### Events
-
-```js
-{ type: 'created',      node: DAGNode }  // node created
-{ type: 'selected',     node: DAGNode }  // node selected
-{ type: 'deselected',   node: DAGNode }  // node no longer selected (another selected, cleared, graph replaced, undo/redo)
-{ type: 'updated',      node: DAGNode }  // label changed, or a port added / removed / relabelled
-{ type: 'deleted',      node: DAGNode }  // node deleted
-{ type: 'edge-created', edge: DAGEdge }  // edge created
-{ type: 'edge-deleted', edge: DAGEdge }  // edge deleted
-```
-
-Removing a port that has edges fires `edge-deleted` for each, then `updated`.
-
-`DAGNode` properties: `id`, `label`, `x`, `y`, `inputs[]`, `outputs[]`  
-`DAGEdge` properties: `id`, `fromNodeId`, `fromPortId`, `toNodeId`, `toPortId`
 
 ---
 
@@ -189,12 +209,12 @@ Removing a port that has edges fires `edge-deleted` for each, then `updated`.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "nodes": [
     {
       "id": "n1",
       "label": "Source",
-      "x": 40, "y": 100,
+      "x": 0.0, "y": 0.5,
       "inputs":  [],
       "outputs": [{ "id": "data", "label": "data" }]
     }
@@ -209,28 +229,32 @@ Removing a port that has edges fires `edge-deleted` for each, then `updated`.
 }
 ```
 
-Version 1 graphs (single implicit port per node, `from`/`to` edge fields) are automatically upgraded on load.
+**Positions are normalised.** In version 3, each node's `x` and `y` are its distance from the top-left of the graph, divided by the graph's larger extent, so that extent runs from 0 to 1 and the other axis is in proportion. A layout exported at one window size therefore looks the same when imported at another. On import, the normalised positions are placed at the smallest scale at which no two nodes overlap (with a 40 px gap), and then the view is fitted. Exporting again gives back the same numbers.
+
+Version 2 files (positions in the editor's own units) and version 1 files are still read as they were. Version 1 graphs (single implicit port per node, `from`/`to` edge fields) are upgraded on load.
+
+Edge routes from auto-layout are not exported: a graph read back from JSON is drawn with single or straight edges until it is laid out again.
 
 ---
 
 ## Theming
 
-All colours are CSS custom properties on `:root` in `dag-editor.css`:
+The editor follows the browser's light or dark setting (`prefers-color-scheme`). Every colour is a CSS custom property on the editor's container, `.dag-editor`, defined in `dag-editor.css` for light and dark. Override them on your own container to restyle the editor:
 
 ```css
-:root {
-  --dag-bg:          #0f1117;  /* canvas background    */
-  --dag-node-fill:   #1e2538;  /* node background      */
-  --dag-node-stroke: #3a4466;  /* node border          */
-  --dag-node-sel:    #4a7cff;  /* selection blue       */
-  --dag-node-text:   #c8d0f0;  /* label text           */
-  --dag-edge:        #3a4466;  /* edge stroke          */
-  --dag-accent:      #4a7cff;  /* selected edge        */
-  --dag-draft:       #ff9f4a;  /* draft edge (orange)  */
-  --dag-port:        #4a7cff;  /* port highlight       */
-  /* … see dag-editor.css for the full list */
+.dag-editor {
+  --dag-bg:            #f5f6fa;  /* canvas                                     */
+  --dag-stroke:        #8d97bb;  /* default node outline and edge              */
+  --dag-hover:         #3d63d6;  /* hovered node outline and edge              */
+  --dag-selected:      #0c9c84;  /* selected node outline, edge and ports      */
+  --dag-node-fill:     #ffffff;  /* node body                                  */
+  --dag-node-text:     #1f2745;  /* labels                                     */
+  --dag-draft:         #e0762a;  /* a line being drawn, and its drop targets   */
+  /* … see dag-editor.css for the full list, and the dark values */
 }
 ```
+
+Nodes and edges share the same three colours: default, hovered and selected. Arrowheads take the colour of the edge they end, where the browser supports `context-stroke`.
 
 ---
 

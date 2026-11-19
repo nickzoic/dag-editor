@@ -101,10 +101,9 @@ class DAGEdge {
 
 /* ─────────────────────────── DAGEditor class ───────────────────────── */
 class DAGEditor {
-  constructor(container, onChange) {
+  constructor(container) {
     if (!(container instanceof HTMLElement)) throw new Error('DAGEditor: first argument must be an HTMLElement');
     this._container = container;
-    this._onChange  = typeof onChange === 'function' ? onChange : () => {};
 
     this._nodes   = new Map();  // id → DAGNode
     this._edges   = new Map();  // id → DAGEdge
@@ -394,44 +393,99 @@ class DAGEditor {
   }
 
   /* ─────────────────── DOM setup ─────────────────── */
+  /* ─────────────────── hooks ───────────────────
+   * The editor reports what happens by calling these methods. They do nothing by default; a host page
+   * overrides the ones it needs, either by subclassing:
+   *
+   *     class MyEditor extends DAGEditor { onMoveNode(node) { save(node); } }
+   *
+   * or on an instance:  editor.onMoveNode = node => save(node);
+   *
+   * They are called after the change has been made, so the editor can be queried from inside them. */
+
+  /** A node was added, by the user or through addNode. loadGraph replaces the graph and reports nothing. */
+  onAddNode(node) {}
+  /** A node was deleted. Its edges were deleted first (see onDeleteEdge). */
+  onDeleteNode(node) {}
+  /** A node was selected. */
+  onSelectNode(node) {}
+  /** A node stopped being selected. */
+  onDeselectNode(node) {}
+  /** An edge was selected. */
+  onSelectEdge(edge) {}
+  /** An edge stopped being selected. */
+  onDeselectEdge(edge) {}
+  /** A node's label or ports changed. */
+  onUpdateNode(node) {}
+  /** An edge was added (dragged between ports, or inserted on an edge). */
+  onAddEdge(edge) {}
+  /** An edge was deleted (directly, with its node or port, or when a node was spliced out). */
+  onDeleteEdge(edge) {}
+  /** The user dragged a node and let go of it. Fires once per drag, and only if the node moved. Automatic
+   *  layout does not call it. */
+  onMoveNode(node) {}
+  /** A message for the user, such as why an edge was refused. */
+  onNotice(message) {}
+  /** Auto-layout started (active = true) or finished or was stopped (active = false). */
+  onLayoutChange(active) {}
+  /** Pinned auto-layout was switched on or off. */
+  onPinChange(pinned) {}
+
+  /* ─────────────────── public state and commands ─────────────────── */
+
+  /** Whether auto-layout is pinned: re-run after every change to the nodes or edges. */
+  get layoutPinned() { return this._layoutPinned; }
+
+  /** Switch pinned auto-layout on or off (the same as Shift+L). */
+  setLayoutPinned(on) {
+    on = !!on;
+    if (on === this._layoutPinned) return;
+    this._layoutPinned = on;
+    this.onPinChange(on);
+    if (on && !this._layoutActive) this.autoLayout(true);
+    if (!on && this._layoutActive) this.autoLayout(false);
+  }
+
+  /** Whether an auto-layout run is in progress. */
+  get layoutActive() { return this._layoutActive; }
+
+  /** Add a node at the centre of the view (offset a little from the last one, so they do not stack). */
+  addNodeAtCentre() { return this._createNodeAtCenter(); }
+
+  /** Fit the whole graph to the view. */
+  fitView() { this._fitView(); }
+
+  /** Delete whatever is selected (a node with its edges, or an edge). */
+  deleteSelected() { this._deleteSelected(); }
+
+  /** The selection: { kind: 'node' | 'edge', id } or null. */
+  get selected() { return this._selected ? { ...this._selected } : null; }
+
   _buildDOM() {
     const c = this._container;
     c.style.position   = 'relative';
     c.style.overflow   = 'hidden';
     c.style.userSelect = 'none';
     c.style.outline    = 'none';
+    c.classList.add('dag-editor');
     if (!c.style.width)  c.style.width  = '100%';
     // Fall back to a default height only if the page's CSS gave the container none
     // (otherwise honour the layout, e.g. a flex/grid cell that fills the page).
     if (!c.style.height && c.getBoundingClientRect().height < 1) c.style.height = '480px';
     c.setAttribute('tabindex', '0');
 
-    this._toolbar = document.createElement('div');
-    this._toolbar.className = 'dag-toolbar';
-    this._toolbar.innerHTML = `
-      <span class="dag-brand">DAG Editor</span>
-      <div class="dag-toolbar-actions">
-        <button data-action="add-node"    title="New node (N)">+ Node</button>
-        <button data-action="del-selected" title="Delete selected (Del)">Delete</button>
-        <button data-action="undo"        title="Undo (Ctrl+Z)">↩ Undo</button>
-        <button data-action="redo"        title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
-        <button data-action="fit"         title="Fit graph to view">Fit</button>
-        <button data-action="layout"      title="Toggle auto-layout (L)" class="dag-btn-layout">⟳ Layout</button>
-      </div>`;
-    c.appendChild(this._toolbar);
-
     this._svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this._svg.setAttribute('class', 'dag-svg');
     this._svg.setAttribute('tabindex', '-1');
     this._svg.innerHTML = `<defs>
       <marker id="dag-arrow"       markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-        <polygon points="0 0, 8 3, 0 6" fill="var(--dag-edge)"/>
+        <polygon class="dag-arrow-head" points="0 0, 8 3, 0 6"/>
       </marker>
       <marker id="dag-arrow-sel"   markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-        <polygon points="0 0, 8 3, 0 6" fill="#2ee8c0"/>
+        <polygon class="dag-arrow-head dag-arrow-head--selected" points="0 0, 8 3, 0 6"/>
       </marker>
       <marker id="dag-arrow-draft" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-        <polygon points="0 0, 8 3, 0 6" fill="var(--dag-draft)"/>
+        <polygon class="dag-arrow-head dag-arrow-head--draft" points="0 0, 8 3, 0 6"/>
       </marker>
     </defs>`;
 
@@ -458,10 +512,6 @@ class DAGEditor {
     this._svg.appendChild(this._gEdges);
     c.appendChild(this._svg);
 
-    this._hint = document.createElement('div');
-    this._hint.className = 'dag-hint';
-    this._hint.textContent = 'Click canvas to add a node · Drag a port to draw an edge · Drop on canvas to auto-create a node · Del to delete';
-    c.appendChild(this._hint);
   }
 
   _attachEvents() {
@@ -473,35 +523,6 @@ class DAGEditor {
     this._svg.addEventListener('dblclick',   e => this._onDblClick(e));
     this._container.addEventListener('keydown', e => this._onKeyDown(e));
 
-    this._toolbar.addEventListener('click', e => {
-      const btn = e.target.closest('[data-action]');
-      if (!btn) return;
-      const a = btn.dataset.action;
-      if (a === 'add-node')     this._createNodeAtCenter();
-      if (a === 'del-selected') this._deleteSelected();
-      if (a === 'undo')         this.undo();
-      if (a === 'redo')         this.redo();
-      if (a === 'fit')          this._fitView();
-      if (a === 'layout')       this.autoLayout(!this._layoutActive);
-      this._container.focus();
-    });
-
-    this._toolbar.addEventListener('dblclick', e => {
-      const btn = e.target.closest('[data-action="layout"]');
-      if (!btn) return;
-      e.preventDefault();
-      // Double-click toggles pinned mode (auto-layout on every graph change)
-      this._layoutPinned = !this._layoutPinned;
-      this._updateLayoutBtn();
-      if (this._layoutPinned) {
-        // Start an immediate layout run if not already running
-        if (!this._layoutActive) this.autoLayout(true);
-      } else {
-        // Unpinning: also stop any active run
-        if (this._layoutActive) this.autoLayout(false);
-      }
-      this._container.focus();
-    });
   }
 
   /* ─────────────────── orientation and resizing ─────────────────── */
@@ -722,7 +743,13 @@ class DAGEditor {
       this._render(); return;
     }
 
-    if (this._dragging) { this._snapshot(); this._dragging = null; }
+    if (this._dragging) {
+      const d = this._dragging;
+      this._dragging = null;
+      this._snapshot();
+      const node = this._nodes.get(d.nodeId);
+      if (node && (node.x !== d.origX || node.y !== d.origY)) this.onMoveNode(node);
+    }
     this._panning = null;
   }
 
@@ -798,7 +825,7 @@ class DAGEditor {
 
       // Remove the original edge
       this._edges.delete(edge.id);
-      this._onChange({ type: 'edge-deleted', edge });
+      this.onDeleteEdge(edge);
 
       // Connect: upstream → new node input, new node output → downstream
       this._tryAddEdge(edge.fromNodeId, edge.fromPortId, newNode.id, 'in');
@@ -824,10 +851,7 @@ class DAGEditor {
       case 'n': case 'N': this._createNodeAtCenter(); break;
       case 'l': case 'L':
         if (e.shiftKey) {
-          this._layoutPinned = !this._layoutPinned;
-          this._updateLayoutBtn();
-          if (this._layoutPinned && !this._layoutActive) this.autoLayout(true);
-          if (!this._layoutPinned && this._layoutActive) this.autoLayout(false);
+          this.setLayoutPinned(!this._layoutPinned);
         } else {
           this.autoLayout(!this._layoutActive);
         }
@@ -1117,7 +1141,7 @@ class DAGEditor {
     this._setSelected('node', id);
     this._snapshot();
     this._render();
-    this._onChange({ type: 'created', node });
+    this.onAddNode(node);
     return node;
   }
 
@@ -1153,8 +1177,7 @@ class DAGEditor {
           e.toNodeId   === toNodeId   && e.toPortId   === toPortId) return false;
     }
     if (this._wouldCreateCycle(fromNodeId, toNodeId)) {
-      this._hint.textContent = '⚠ Cannot add edge — would create a cycle.';
-      setTimeout(() => this._resetHint(), 2000);
+      this.onNotice('Cannot add edge — would create a cycle.');
       return false;
     }
     const id   = this._nextEdgeId();
@@ -1162,7 +1185,7 @@ class DAGEditor {
     this._edges.set(id, edge);
     this._snapshot();
     this._render();
-    this._onChange({ type: 'edge-created', edge });
+    this.onAddEdge(edge);
     this._triggerPinnedLayout();
     return true;
   }
@@ -1227,34 +1250,33 @@ class DAGEditor {
       }
 
       this._snapshot(); this._render();
-      for (const e of removedEdges) this._onChange({ type: 'edge-deleted', edge: e });
-      if (node) this._onChange({ type: 'deleted', node });
-      for (const e of bridgeEdges) this._onChange({ type: 'edge-created', edge: e });
+      for (const e of removedEdges) this.onDeleteEdge(e);
+      if (node) this.onDeleteNode(node);
+      for (const e of bridgeEdges) this.onAddEdge(e);
       this._triggerPinnedLayout();
     } else if (kind === 'edge') {
       const edge = this._edges.get(id);
       this._edges.delete(id);
       this._setSelected(null, null);
       this._snapshot(); this._render();
-      if (edge) this._onChange({ type: 'edge-deleted', edge });
+      if (edge) this.onDeleteEdge(edge);
       this._triggerPinnedLayout();
     }
   }
 
   _setSelected(kind, id) {
-    const prev     = this._selected;
-    const prevNode = prev?.kind === 'node' ? this._nodes.get(prev.id) : null;
+    const prev = this._selected;
     this._selected = kind ? { kind, id } : null;
     this._render();
-    // A node stops being selected when selection moves elsewhere or is cleared
-    if (prevNode && !(kind === 'node' && id === prev.id)) {
-      this._onChange({ type: 'deselected', node: prevNode });
+    const same = prev && kind === prev.kind && id === prev.id;
+    if (prev && !same) {
+      if (prev.kind === 'node') { const n = this._nodes.get(prev.id); if (n) this.onDeselectNode(n); }
+      else                      { const e = this._edges.get(prev.id); if (e) this.onDeselectEdge(e); }
     }
-    if (kind === 'node') {
-      const node = this._nodes.get(id);
-      if (node) this._onChange({ type: 'selected', node });
-    }
+    if (kind === 'node') { const n = this._nodes.get(id); if (n) this.onSelectNode(n); }
+    if (kind === 'edge') { const e = this._edges.get(id); if (e) this.onSelectEdge(e); }
   }
+
 
   _selectNextNode(dir) {
     const ids = [...this._nodes.keys()];
@@ -1333,9 +1355,7 @@ class DAGEditor {
     this._restore(snap);
   }
 
-  _resetHint() {
-    this._hint.textContent = 'Click canvas to add a node · Drag a port to draw an edge · Drop on canvas to auto-create a node · Del to delete';
-  }
+
 
   /* ─────────────────── render ─────────────────── */
   _render() { this._renderEdges(); this._renderNodes(); this._applyTransform(); }
@@ -1546,15 +1566,8 @@ class DAGEditor {
     return stratum;
   }
 
-  _updateLayoutBtn() {
-    const btn = this._toolbar.querySelector('[data-action="layout"]');
-    if (!btn) return;
-    btn.classList.toggle('dag-btn-layout--on',     this._layoutActive || this._layoutPinned);
-    btn.classList.toggle('dag-btn-layout--pinned', this._layoutPinned);
-    btn.title = this._layoutPinned
-      ? 'Auto-layout pinned — double-click to unpin (L)'
-      : 'Toggle auto-layout — double-click to pin (L)';
-  }
+  _notifyLayout() { this.onLayoutChange(this._layoutActive); }
+
 
   /* Trigger a layout run when the graph changes in pinned mode. */
   _triggerPinnedLayout() {
@@ -1570,7 +1583,7 @@ class DAGEditor {
 
   autoLayout(active) {
     this._layoutActive = active;
-    this._updateLayoutBtn();
+    this._notifyLayout();
     if (active) {
       this._layoutTargets   = this._computeLayoutTargets();
       this._layoutStartTime = this._layoutLastTime = performance.now();
@@ -1913,7 +1926,7 @@ class DAGEditor {
     this._render();
     this._fitView();
 
-    if (settled) { this._layoutActive = false; this._updateLayoutBtn(); this._snapshot(); return; }
+    if (settled) { this._layoutActive = false; this._notifyLayout(); this._snapshot(); return; }
     this._layoutRaf = requestAnimationFrame(() => this._layoutTick());
   }
 
@@ -1990,21 +2003,61 @@ class DAGEditor {
       if (num > this._edgeSeq) this._edgeSeq = num;
     });
 
+    if (version === 3) this._placeNormalised();
     this._selected = null;
     this._snapshot(); this._render(); this._fitView();
     this._triggerPinnedLayout();
   }
 
   /**
-   * Export graph as a JSON-serialisable plain object (schema version 2).
-   * @returns {{ version:2, nodes:object[], edges:object[] }}
+   * Export graph as a JSON-serialisable plain object (schema version 3).
+   *
+   * Node positions are normalised: each node's x and y are its distance from the top-left of the graph,
+   * divided by the graph's larger extent, so that the larger extent runs from 0 to 1 and the other is in
+   * proportion. A layout exported at one size therefore looks the same when imported at another.
+   * @returns {{ version:3, nodes:object[], edges:object[] }}
    */
   toJSON() {
+    const pos = this._normalisedPositions();
     return {
-      version: 2,
-      nodes: [...this._nodes.values()].map(n => n.toJSON()),
+      version: 3,
+      nodes: [...this._nodes.values()].map(n => ({ ...n.toJSON(), ...pos.get(n.id) })),
       edges: [...this._edges.values()].map(e => e.toJSON()),
     };
+  }
+
+  /* Node positions as fractions of the graph's larger extent (see toJSON), to 6 decimal places. */
+  _normalisedPositions() {
+    const ns = [...this._nodes.values()], out = new Map();
+    if (!ns.length) return out;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of ns) {
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y);
+    }
+    const L = Math.max(maxX - minX, maxY - minY) || 1;
+    const r6 = v => { const r = Math.round(v * 1e6) / 1e6; return r === 0 ? 0 : r; };
+    for (const n of ns) out.set(n.id, { x: r6((n.x - minX) / L), y: r6((n.y - minY) / L) });
+    return out;
+  }
+
+  /* Turn the normalised positions of a just-loaded graph into positions in the editor's own units: the
+   * smallest scale at which every pair of nodes is clear of each other by a gap. Two nodes are clear if they
+   * are at least a node width apart horizontally, or a node height apart vertically (plus the gap). Being
+   * the smallest such scale, it depends only on the normalised positions, so exporting again gives them back. */
+  _placeNormalised() {
+    const ns = [...this._nodes.values()];
+    const H = Math.max(0, ...ns.map(n => this._nodeHeight(n)));
+    const W = DAGEditor._NODE_W, GAP = DAGEditor._LAYOUT_NODE_GAP;
+    let S = 0;
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const dx = Math.abs(ns[i].x - ns[j].x), dy = Math.abs(ns[i].y - ns[j].y);
+      let need = Infinity;
+      if (dx > 0) need = (W + GAP) / dx;
+      if (dy > 0) need = Math.min(need, (H + GAP) / dy);
+      if (need < Infinity) S = Math.max(S, need);
+    }
+    for (const n of ns) { n.x *= S; n.y *= S; }
   }
 
   /**
@@ -2015,7 +2068,7 @@ class DAGEditor {
   fromJSON(data) {
     if (!data || typeof data !== 'object') throw new Error('DAGEditor.fromJSON: expected a plain object');
     const v = data.version ?? 1;
-    if (v !== 1 && v !== 2) throw new Error(`DAGEditor.fromJSON: unsupported version ${v}`);
+    if (v !== 1 && v !== 2 && v !== 3) throw new Error(`DAGEditor.fromJSON: unsupported version ${v}`);
     this.loadGraph(data);
     return this;
   }
@@ -2069,7 +2122,7 @@ class DAGEditor {
     node.label = label;
     this._snapshot(`label:${nodeId}`);
     this._render();
-    this._onChange({ type: 'updated', node });
+    this.onUpdateNode(node);
     return true;
   }
 
@@ -2091,7 +2144,7 @@ class DAGEditor {
     list.push(port);
     this._snapshot();
     this._render();
-    this._onChange({ type: 'updated', node });
+    this.onUpdateNode(node);
     return port;
   }
 
@@ -2121,8 +2174,8 @@ class DAGEditor {
     }
     this._snapshot();
     this._render();
-    for (const e of removed) this._onChange({ type: 'edge-deleted', edge: e });
-    this._onChange({ type: 'updated', node });
+    for (const e of removed) this.onDeleteEdge(e);
+    this.onUpdateNode(node);
     if (removed.length) this._triggerPinnedLayout();
     return true;
   }
@@ -2142,7 +2195,7 @@ class DAGEditor {
     port.label = label;
     this._snapshot(`plabel:${nodeId}:${direction}:${portId}`);
     this._render();
-    this._onChange({ type: 'updated', node });
+    this.onUpdateNode(node);
     return true;
   }
 

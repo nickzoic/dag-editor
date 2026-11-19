@@ -2,6 +2,7 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { createEnv, port, graph, same } = require('../helpers/jsdom-env');
+const near = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} is not within ${tol} of ${b}`);
 
 const sample = () => graph(
   [['n1', 'Source', 10, 20, [], [port('data', 'data')]], ['n2', 'Sink', 310, 20, [port('in', 'in')], []], ['n7', 'Seven', 0, 0]],
@@ -11,10 +12,16 @@ describe('export', () => {
   let env, editor;
   beforeEach(() => { env = createEnv(); editor = env.editor; editor.loadGraph(sample()); });
 
-  it('toJSON is a plain version-2 description of the graph', () => {
+  it('toJSON is a plain version-3 description of the graph, with positions normalised to [0, 1]', () => {
     const j = editor.toJSON();
-    assert.equal(j.version, 2);
-    same(j.nodes[0], { id: 'n1', label: 'Source', x: 10, y: 20, inputs: [], outputs: [{ id: 'data', label: 'data' }] });
+    assert.equal(j.version, 3);
+    // the sample's extent is 310 px across and 0 down the first column: x spans [0, 1]; y is scaled by the same amount
+    const xs = j.nodes.map(n => n.x), ys = j.nodes.map(n => n.y);
+    near(Math.min(...xs), 0); near(Math.min(...ys), 0);
+    near(Math.max(...xs.concat(ys)), 1);
+    assert.ok(xs.concat(ys).every(v => v >= 0 && v <= 1));
+    same(j.nodes[0].inputs, []);
+    same(j.nodes[0].outputs, [{ id: 'data', label: 'data' }]);
     same(j.edges[0], { id: 'e1', fromNodeId: 'n1', fromPortId: 'data', toNodeId: 'n2', toPortId: 'in' });
   });
 
@@ -49,7 +56,7 @@ describe('import', () => {
   it('fromJSON rejects things that are not graphs', () => {
     assert.throws(() => dst.fromJSON(null), /plain object/);
     assert.throws(() => dst.fromJSON('x'), /plain object/);
-    assert.throws(() => dst.fromJSON({ version: 3, nodes: [] }), /unsupported version 3/);
+    assert.throws(() => dst.fromJSON({ version: 4, nodes: [] }), /unsupported version 4/);
   });
 
   it('importJSON rejects text that is not JSON, saying so', () => {
@@ -102,10 +109,10 @@ describe('loading version 1 graphs', () => {
     assert.equal(editor.getGraph().nodes[0].inputs.length, 1);
   });
 
-  it('exports in version 2 afterwards', () => {
+  it('exports in version 3 afterwards', () => {
     const { editor } = createEnv();
     editor.fromJSON({ version: 1, nodes: [{ id: 'n1', label: 'A', x: 0, y: 0 }], edges: [] });
-    assert.equal(editor.toJSON().version, 2);
+    assert.equal(editor.toJSON().version, 3);
   });
 });
 

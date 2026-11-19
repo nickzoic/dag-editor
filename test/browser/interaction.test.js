@@ -9,7 +9,6 @@ const ed = (page, fn, ...args) => page.evaluate(fn, ...args);
 const counts = page => page.evaluate(() => { const e = window.eval('editor'); return { nodes: e.getGraph().nodes.length, edges: e.getGraph().edges.length, sel: e._selected && e._selected.id }; });
 const style = (page, sel, prop) => page.evaluate((sel, prop) => getComputedStyle(document.querySelector(sel))[prop], sel, prop);
 const nodeSel = id => `.dag-node[data-id="${id}"]`;
-const TEAL = 'rgb(46, 232, 192)';
 
 describe('real input devices', () => {
   let b, page;
@@ -70,7 +69,7 @@ describe('real input devices', () => {
     const from = await B.portCentre(page, 'B', 'out', 'out'), to = await B.portCentre(page, 'A', 'in', 'in');
     await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y, { steps: 6 }); await page.mouse.up();
     assert.equal((await counts(page)).edges, 1);
-    assert.match(await ed(page, () => document.querySelector('.dag-hint').textContent), /cycle/);
+    assert.match(await ed(page, () => document.getElementById('hint').textContent), /cycle/);
   });
 
   it('clicking an edge selects it; Delete removes it', async () => {
@@ -116,7 +115,7 @@ describe('real input devices', () => {
     it('L runs a layout, and Shift+L pins and unpins it', async () => {
       await page.keyboard.down('Shift'); await page.keyboard.press('L'); await page.keyboard.up('Shift');
       assert.equal(await ed(page, () => window.eval('editor')._layoutPinned), true);
-      assert.ok(await ed(page, () => document.querySelector('[data-action="layout"]').classList.contains('dag-btn-layout--pinned')));
+      assert.ok(await ed(page, () => document.getElementById('layout-btn').classList.contains('pinned')));
       await page.keyboard.down('Shift'); await page.keyboard.press('L'); await page.keyboard.up('Shift');
       assert.equal(await ed(page, () => window.eval('editor')._layoutPinned), false);
     });
@@ -167,19 +166,22 @@ describe('real input devices', () => {
       assert.equal((await counts(page)).nodes, 3);
     });
 
-    it('Layout lights up while it runs, and a double-click pins it (shown in teal)', async () => {
+    it('Layout lights up while it runs, and a double-click pins it', async () => {
       await ed(page, () => { window.eval('editor').getGraph().nodes[0].y += 300; });
       await page.click('[data-action="layout"]');
-      assert.ok(await ed(page, () => document.querySelector('[data-action="layout"]').classList.contains('dag-btn-layout--on')));
+      assert.ok(await ed(page, () => document.getElementById('layout-btn').classList.contains('on')));
       await B.layoutDone(page);
-      await page.click('[data-action="layout"]', { count: 2, delay: 30 });
+      await B.sleep(100);
+      assert.ok(!(await ed(page, () => document.getElementById('layout-btn').classList.contains('on'))), 'off again once the run has finished');
+      await page.click('#layout-btn', { count: 2, delay: 30 });
       await B.sleep(300);
-      assert.equal(await ed(page, () => window.eval('editor')._layoutPinned), true);
-      assert.equal(await style(page, '[data-action="layout"]', 'color'), TEAL);
+      assert.equal(await ed(page, () => window.eval('editor').layoutPinned), true);
+      assert.ok(await ed(page, () => document.getElementById('layout-btn').classList.contains('pinned')));
     });
   });
 
   describe('how it looks (CSS)', () => {
+    // The colours follow the browser's light / dark setting; these checks hold in either scheme.
     it('hovering a node brightens its outline and shows its port rings', async () => {
       const rest = await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke'), portRest = await style(page, `${nodeSel('b')} .dag-port`, 'stroke');
       await page.hover(`${nodeSel('b')} .dag-node-bg`); await B.sleep(350);
@@ -187,23 +189,41 @@ describe('real input devices', () => {
       assert.notEqual(await style(page, `${nodeSel('b')} .dag-port`, 'stroke'), portRest);
     });
 
-    it('a selected node is teal, its ports match, and it stays teal when hovered', async () => {
+    it('a selected node has the selected outline, its ports match, and it keeps it when hovered', async () => {
       await ed(page, () => window.eval('editor')._setSelected('node', 'b'));
       await page.mouse.move(5, 5); await B.sleep(350);
-      assert.equal(await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke'), TEAL);
-      assert.equal(await style(page, `${nodeSel('b')} .dag-port`, 'stroke'), TEAL);
+      const sel = await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke');
+      assert.equal(await style(page, `${nodeSel('b')} .dag-port`, 'stroke'), sel);
       await page.hover(`${nodeSel('b')} .dag-node-bg`); await B.sleep(350);
-      assert.equal(await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke'), TEAL);
+      assert.equal(await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke'), sel);
     });
 
-    it('a selected edge is teal and stays teal when hovered', async () => {
-      await ed(page, () => { const e = window.eval('editor'); e.addEdge('a', 'out', 'b', 'in'); e._setSelected('edge', 'e1'); });
+    it('a selected edge has the same selected colour as a selected node, and keeps it when hovered', async () => {
+      await ed(page, () => { const e = window.eval('editor'); e.addEdge('a', 'out', 'b', 'in'); e._setSelected('node', 'b'); });
+      await page.mouse.move(5, 5); await B.sleep(350);
+      const selectedNode = await style(page, `${nodeSel('b')} .dag-node-bg`, 'stroke');
+      await ed(page, () => window.eval('editor')._setSelected('edge', 'e1'));
       await B.sleep(350);
-      assert.equal(await style(page, 'path.dag-edge[data-id="e1"]', 'stroke'), TEAL);
+      assert.equal(await style(page, 'path.dag-edge[data-id="e1"]', 'stroke'), selectedNode);
       const m = await ed(page, () => { const e = window.eval('editor'), x = e.getGraph().edges[0], p = e._bezierAt(e._edgeP1(x), e._edgeP2(x), 0.5), r = document.querySelector('.dag-svg').getBoundingClientRect();
         return { x: r.x + e._viewX + p.x * e._scale, y: r.y + e._viewY + p.y * e._scale }; });
       await page.mouse.move(m.x, m.y); await B.sleep(350);
-      assert.equal(await style(page, 'path.dag-edge[data-id="e1"]', 'stroke'), TEAL);
+      assert.equal(await style(page, 'path.dag-edge[data-id="e1"]', 'stroke'), selectedNode);
+    });
+
+    it('an edge has the same default and hovered colours as a node', async () => {
+      await ed(page, () => window.eval('editor').addEdge('a', 'out', 'b', 'in'));
+      await page.mouse.move(5, 5); await B.sleep(350);
+      const nodeRest = await style(page, `${nodeSel('c')} .dag-node-bg`, 'stroke');
+      const edgeRest = await style(page, 'path.dag-edge[data-id="e1"]', 'stroke');
+      assert.equal(edgeRest, nodeRest, 'default edges use the default node outline colour');
+      await page.hover(`${nodeSel('c')} .dag-node-bg`); await B.sleep(350);
+      const nodeHover = await style(page, `${nodeSel('c')} .dag-node-bg`, 'stroke');
+      assert.notEqual(nodeHover, nodeRest);
+      const m = await ed(page, () => { const e = window.eval('editor'), x = e.getGraph().edges[0], p = e._bezierAt(e._edgeP1(x), e._edgeP2(x), 0.5), r = document.querySelector('.dag-svg').getBoundingClientRect();
+        return { x: r.x + e._viewX + p.x * e._scale, y: r.y + e._viewY + p.y * e._scale }; });
+      await page.mouse.move(m.x, m.y); await B.sleep(350);
+      assert.equal(await style(page, 'path.dag-edge[data-id="e1"]', 'stroke'), nodeHover, 'hovered edges use the hovered node colour');
     });
 
     it('ports always have a visible border', async () => {

@@ -24,11 +24,15 @@ describe('the page fills the window', () => {
       const m = await ed(page, () => { const r = id => document.getElementById(id).getBoundingClientRect(), c = r('canvas-container'), p = r('node-pane'),
         hd = document.querySelector('header').getBoundingClientRect(), ft = document.querySelector('footer').getBoundingClientRect();
         return { sh: document.documentElement.scrollHeight, ih: innerHeight, sw: document.documentElement.scrollWidth, iw: innerWidth,
+                 hintTop: document.getElementById('hint').getBoundingClientRect().top, hintBottom: document.getElementById('hint').getBoundingClientRect().bottom,
+                 toolbarTop: document.getElementById('toolbar').getBoundingClientRect().top, toolbarBottom: document.getElementById('toolbar').getBoundingClientRect().bottom,
                  canvasBottom: c.bottom, paneTop: p.top, paneBottom: p.bottom, paneH: p.height, canvasTop: c.top, headerBottom: hd.bottom, footerTop: ft.top, footerBottom: ft.bottom, canvasW: c.width, paneW: p.width }; });
       assert.equal(m.sh, m.ih, 'the page does not scroll vertically');
       assert.equal(m.sw, m.iw, 'or horizontally');
-      assert.ok(Math.abs(m.canvasTop - m.headerBottom) < 1.5, 'the editor starts under the header');
-      assert.ok(Math.abs(m.canvasBottom - m.paneTop) < 1.5, 'the node editor sits directly below the editor');
+      assert.ok(Math.abs(m.toolbarTop - m.headerBottom) < 1.5, 'the toolbar starts under the header');
+      assert.ok(Math.abs(m.canvasTop - m.toolbarBottom) < 1.5, 'the editor starts under the toolbar');
+      assert.ok(Math.abs(m.canvasBottom - m.hintTop) < 1.5, 'the hint bar sits directly below the editor');
+      assert.ok(Math.abs(m.hintBottom - m.paneTop) < 1.5, 'and the node editor directly below that');
       assert.ok(Math.abs(m.paneBottom - m.footerTop) < 1.5, 'and the footer directly below that');
       assert.ok(Math.abs(m.footerBottom - m.ih) < 1.5, 'so the page is filled to the bottom');
       assert.ok(Math.abs(m.canvasW - m.paneW) < 1.5, 'the editor and the node editor are the same width');
@@ -210,10 +214,10 @@ describe('the demo page', () => {
   });
 
   describe('import and export', () => {
-    it('Export JSON fills the box with the graph, in version 2', async () => {
+    it('Export JSON fills the box with the graph, in version 3', async () => {
       await page.click('#export-btn');
       const json = JSON.parse(await ed(page, () => document.getElementById('json-out').value));
-      assert.equal(json.version, 2);
+      assert.equal(json.version, 3);
       assert.equal(json.nodes.length, 12);
       assert.equal(json.edges.length, 15);
     });

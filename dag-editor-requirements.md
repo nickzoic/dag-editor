@@ -1,6 +1,6 @@
 # DAGEditor — Requirements
 
-A standalone, zero-dependency interactive editor for directed acyclic graphs, implemented in plain JavaScript and CSS. It is initialised with a container `<div>` and a callback, and all interaction happens within that container.
+A standalone, zero-dependency interactive editor for directed acyclic graphs, implemented in plain JavaScript and CSS. It is initialised with a container `<div>`, and all interaction happens within that container. It reports what happens through overridable hook methods (§8). The toolbar and hint bar are not part of the editor: they belong to the host page (§2.5).
 
 ---
 
@@ -56,17 +56,17 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - The arrowhead is backed off by half the port stroke-width so it meets the port edge cleanly.
 - Edges render on top of nodes so they are always visible even if layout forces a node underneath.
 - An unselected edge gets a slightly brighter stroke when hovered.
-- A selected edge renders in teal with a glow. This colour is preserved when hovered — the hover state does not override it. The arrowhead matches the edge colour.
+- Edges and nodes share three colours: the default colour, the hovered colour and the selected colour. A selected edge renders in the selected colour with a glow, which is preserved when hovered. The arrowhead takes the colour of the edge it ends (where the browser supports `context-stroke`).
 
 ### 2.4 Draft Edge
 
 - While dragging a port to draw a new edge, a dashed orange preview line is shown from the port surface to the cursor.
 - Compatible target ports (input ports when dragging from an output, and vice versa) are highlighted in orange when the cursor is near them.
 
-### 2.5 Toolbar
+### 2.5 Toolbar and Hint Bar (host page)
 
-- A toolbar at the top of the container contains buttons: **+ Node**, **Delete**, **↩ Undo**, **↪ Redo**, **Fit**, **⟳ Layout**.
-- A hint bar at the bottom of the container shows brief interaction guidance.
+- The editor does not draw a toolbar or a hint bar. The host page provides them, calling the editor's methods (`addNodeAtCentre`, `deleteSelected`, `undo`, `redo`, `fitView`, `autoLayout`, `setLayoutPinned`).
+- The demo page provides **+ Node**, **Delete**, **↩ Undo**, **↪ Redo**, **Fit** and **⟳ Layout** (double-click to pin) above the editor, and a hint bar below it, which shows the editor's `onNotice` messages for a moment.
 
 ---
 
@@ -109,7 +109,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - With a node selected, pressing Delete/Backspace deletes the node and all its connected edges.
 - **Edge bridging**: if the deleted node has exactly one input port and one output port, new edges are automatically created connecting every upstream source directly to every downstream target. Connections that would form self-loops, duplicates, or cycles are skipped.
 - With an edge selected, Delete/Backspace deletes only that edge.
-- The Delete toolbar button performs the same action.
+- The host page's Delete button performs the same action (`deleteSelected`).
 
 ### 3.8 Navigation
 
@@ -186,7 +186,7 @@ Nodes glide toward their positions with a short time constant. The run ends when
 
 ## 6. Fit to View
 
-- The **Fit** toolbar button scales and pans the canvas so all nodes are visible with padding on all sides.
+- `fitView()` (the demo's **Fit** button) scales and pans the canvas so all nodes are visible with padding on all sides.
 - Fit also runs automatically after auto-layout and after loading a graph.
 
 ---
@@ -202,12 +202,75 @@ Nodes glide toward their positions with a short time constant. The run ends when
 
 ---
 
-## 8. Notifications (onChange Callback)
+## 8. Hooks (overridable methods)
 
-The callback receives a plain event object for every graph change:
+The editor reports what happens by calling methods on itself. They do nothing by default; a host page overrides the ones it needs, by subclassing the editor or by assigning an instance method.
 
-| `type` | Payload | Fired when |
-|--------|---------|------------|
+| Hook | Arguments | Called when |
+|------|-----------|-------------|
+| `onAddNode` | `node` | a node is created |
+| `onSelectNode` / `onDeselectNode` | `node` | a node becomes selected / stops being selected (another item selected, selection cleared, graph replaced, undo/redo) |
+| `onSelectEdge` / `onDeselectEdge` | `edge` | an edge becomes selected / stops being selected |
+| `onUpdateNode` | `node` | a node's label changes, or one of its ports is added, removed or relabelled |
+| `onDeleteNode` | `node` | a node is deleted |
+| `onAddEdge` | `edge` | an edge is created (including bridge edges) |
+| `onDeleteEdge` | `edge` | an edge is deleted (including edges removed with their node) |
+| `onMoveNode` | `node` | the user drags a node and lets go; once per drag, only if the node moved. Automatic layout does not call it |
+| `onNotice` | `message` | there is something to tell the user, such as why an edge was refused (a cycle) |
+| `onLayoutChange` | `active` | an auto-layout run starts (`true`) or stops (`false`) |
+| `onPinChange` | `pinned` | pinned auto-layout is switched on or off |
+
+When a node with 1-in-1-out is deleted and edges are bridged, the order is: `onDeleteEdge` for each removed edge, then `onDeleteNode`, then `onAddEdge` for each bridge edge.
+
+When a port is removed, the order is: `onDeleteEdge` for each edge that was attached to it, then `onUpdateNode`.
+
+Each hook is called after its change has been made. `loadGraph` replaces the graph and reports nothing.
+
+---
+
+## 9. Programmatic API
+
+```
+// Construction
+new DAGEditor(container)     // container: an HTMLElement; the editor fills it
+
+// Graph
+addNode(label, x?, y?, { inputs?, outputs? })  → DAGNode   (no position: the middle of the view)
+addNodeAtCentre()                              → DAGNode
+addEdge(fromNodeId, fromPortId, toNodeId, toPortId)  → boolean
+deleteNode(id)
+deleteEdge(id)
+deleteSelected()
+setNodeLabel(nodeId, label)                    → boolean
+addPort(nodeId, direction, { id?, label? })    → port | null
+removePort(nodeId, direction, portId)          → boolean
+setPortLabel(nodeId, direction, portId, label) → boolean
+getGraph()                                     → { nodes: DAGNode[], edges: DAGEdge[] }
+selected                                       → { kind, id } | null
+flipped                                        → boolean
+
+// Import / export
+loadGraph(data)         // replaces current graph; fires no hooks; accepts versions 1, 2 and 3
+toJSON()                // → plain object (version 3: normalised positions)
+fromJSON(data)          // load from a plain object
+exportJSON(indent?)     // → JSON string
+importJSON(json)        // parse and load
+
+// View and layout
+fitView()
+autoLayout(active)      // programmatic layout control
+layoutActive            // a run is in progress
+layoutPinned            // pinned
+setLayoutPinned(on)     // as Shift+L
+
+undo()
+redo()
+destroy()               // remove all DOM
+```
+
+All valid node and edge operations call the appropriate hooks.
+
+--------|---------|------------|
 | `'created'` | `node: DAGNode` | A node is created |
 | `'selected'` | `node: DAGNode` | A node is selected |
 | `'deselected'` | `node: DAGNode` | A node stops being selected (another node or edge selected, selection cleared, graph replaced, undo/redo) |
@@ -222,61 +285,20 @@ When a port is removed, the order is: `edge-deleted` for each edge that was atta
 
 ---
 
-## 9. Programmatic API
-
-The editor exposes the following methods for programmatic control:
-
-```
-addNode(label, x?, y?, { inputs?, outputs? })  → DAGNode
-addEdge(fromNodeId, fromPortId, toNodeId, toPortId)  → boolean
-deleteNode(id)
-deleteEdge(id)
-setNodeLabel(nodeId, label)                     → boolean
-addPort(nodeId, direction, { id?, label? })     → port | null
-removePort(nodeId, direction, portId)           → boolean
-setPortLabel(nodeId, direction, portId, label)  → boolean
-getGraph()  → { nodes: DAGNode[], edges: DAGEdge[] }
-loadGraph(data)         // replaces current graph; fires no events
-autoLayout(active)      // programmatic layout control
-toJSON()                // → plain object (version 2 schema)
-fromJSON(data)          // load from plain object (v1 or v2)
-exportJSON(indent?)     // → JSON string
-importJSON(json)        // parse and load
-undo()
-redo()
-destroy()               // remove all DOM
-```
-
-All valid node and edge operations fire the appropriate `onChange` events.
-
-### 9.1 Node and Port Editing
-
-- `direction` is `'input'` or `'output'`; anything else is an error.
-- `addPort` generates an id unique within that side of the node (`in`, `in2`, … / `out`, `out2`, …) unless one is given; it returns `null` if the node is unknown or the given id is already used on that side. New ports have an empty label unless given one.
-- `removePort` removes the port **and every edge attached to it**; if the selected edge is one of them, the selection is cleared. Returns `false` for an unknown node or port.
-- Adding or removing a port, or changing a port label, can switch a node between compact and expanded (§1.1); the change is visible immediately. Changing a node label re-wraps it and resizes the node.
-- A pinned auto-layout re-runs when removing a port deletes edges, but not for label changes or for adding a port.
-- Each operation is one undo step (except repeated edits of one label, see §7).
-
-### 9.2 Container Sizing
-
-- The editor fills its container. It only applies a default height (480 px) when the page's CSS leaves the container with no height at all, so a container sized by a flex or grid layout is respected.
-
----
 
 ## 10. Import / Export
 
-### 10.1 JSON Schema (version 2)
+### 10.1 JSON Schema (version 3)
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "nodes": [
     {
       "id": "n1",
       "label": "My Node",
-      "x": 100,
-      "y": 80,
+      "x": 0.0,
+      "y": 0.4,
       "inputs":  [{ "id": "in",  "label": "data" }],
       "outputs": [{ "id": "out", "label": "result" }]
     }
@@ -293,7 +315,13 @@ All valid node and edge operations fire the appropriate `onChange` events.
 }
 ```
 
-Edge routes from auto-layout (§5.5) are not part of the export: a graph read back from JSON is drawn with single curves until it is laid out again.
+**Normalised positions.** Each node's `x` and `y` are its distance from the top-left of the graph, divided by the graph's larger extent, so that extent runs from 0 to 1 and the other axis is in proportion (both rounded to six decimal places). Exporting does not change the editor's own positions.
+
+**Import.** The normalised positions are placed at the smallest scale at which no two nodes overlap, with a 40 px gap. Two nodes are clear if they are at least a node width apart horizontally or a node height apart vertically. The scale depends only on the normalised positions, so exporting again gives back the same text, and a graph imported at any window size has the same model positions. The view is then fitted (§6).
+
+**Versions 1 and 2** (positions in the editor's own units) are read as they were.
+
+Edge routes from auto-layout (§5.5) are not part of the export: a graph read back from JSON is drawn with single or straight edges until it is laid out again.
 
 ### 10.2 Version 1 Compatibility
 
@@ -301,14 +329,14 @@ Version 1 graphs (nodes without ports, edges with `from`/`to` instead of `fromNo
 
 ---
 
-## 11. Visual Design (Dark Theme)
+## 11. Visual Design (Light and Dark)
 
-- Dark navy/charcoal backgrounds throughout.
-- Two primary accent colours: **blue** (port highlights, one-shot layout, general selection affordances) and **teal** (node selection, selected edges, pinned layout).
-- The draft edge colour is **orange**.
-- Port dots use a consistent colour across their three states: dim (rest), blue ring (node hovered), solid blue (port hovered), teal (selected node), orange (drop target).
-- Edge states: dim (rest), slightly brighter (hovered), teal with glow (selected).
-- All colour values and spacing constants are defined as CSS custom properties so they can be overridden.
+- The colours follow the browser's `prefers-color-scheme` setting: light by default, dark when the browser asks for it. Both are defined in `dag-editor.css`.
+- Every colour is a CSS custom property on the editor's container (`.dag-editor`), so a host page can restyle the editor by overriding them.
+- Nodes and edges share three colours: **default** (the node outline and the edge), **hovered** and **selected**. Selected nodes and edges also take the selected fill (nodes) and a glow.
+- Port dots use a consistent scheme: a dim ring at rest, the hovered colour when the node is hovered, the hovered colour solid when the port itself is hovered, the selected colour on a selected node, and the draft colour when they are a drop target.
+- The draft edge and the ports it can connect to use the **draft** colour (orange in both schemes).
+- Arrowheads take the colour of the edge they end, where the browser supports `context-stroke`; otherwise the default or selected colour.
 
 ---
 
@@ -319,7 +347,7 @@ The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as 
 ### 12.1 Layout
 
 - The page fills the full viewport height with no page scroll: a slim header, a workspace that takes all remaining height, and a slim footer.
-- In the workspace, the graph editor is stacked above a **node editor pane** in the left column; the graph editor takes all height not used by the pane. The sidebar (event log, import/export, shortcut list, sample loader) is on the right.
+- In the workspace, the left column stacks the page's toolbar, the graph editor, the hint bar, and the **node editor pane**; the graph editor takes all height not used by the rest. The sidebar (event log, import/export, shortcut list, sample loader) is on the right.
 
 ### 12.2 Node Editor Pane
 
@@ -331,7 +359,7 @@ The demo (`dag-editor-demo.html`) loads `dag-editor.css` and `dag-editor.js` as 
 
 ### 12.3 Event Log
 
-- Logs every `onChange` event, including `deselected` and `updated`. User-supplied labels are shown as plain text, never interpreted as HTML.
+- Logs every hook, including deselections, moves (`onMoveNode`), and edge selections. User-supplied labels are shown as plain text, never interpreted as HTML.
 
 ### 12.4 Default Sample Graph
 

@@ -48,15 +48,13 @@ describe('creating an editor', () => {
     assert.doesNotThrow(() => editor.addNode('A', 0, 0));
   });
 
-  it('builds a toolbar, a canvas and a hint bar inside the container', () => {
+  it('builds only the canvas: the toolbar and hint belong to the host page', () => {
     const { container } = createEnv();
-    assert.ok(container.querySelector('.dag-toolbar'));
+    assert.equal(container.querySelector('.dag-toolbar'), null);
     assert.ok(container.querySelector('svg.dag-svg'));
-    assert.ok(container.querySelector('.dag-hint'));
+    assert.equal(container.querySelector('.dag-hint'), null);
     assert.equal(container.getAttribute('tabindex'), '0', 'focusable, so it can receive keyboard shortcuts');
-    for (const action of ['add-node', 'del-selected', 'undo', 'redo', 'fit', 'layout']) {
-      assert.ok(container.querySelector(`[data-action="${action}"]`), `toolbar button ${action}`);
-    }
+    assert.equal(container.querySelector('[data-action]'), null);
   });
 
   it('gives a container with no size a default width and height, but leaves a sized one alone', () => {
@@ -132,14 +130,15 @@ describe('adding nodes', () => {
     same(editor._selected, { kind: 'node', id: 'n1' });
   });
 
-  it('creates nodes with the New node button and the N key', () => {
-    env.container.querySelector('[data-action="add-node"]').click();
+  it('creates nodes through addNode and the N key, each one offset so they do not stack', () => {
+    editor.addNode();
     env.key('n');
     env.key('N');
     assert.equal(editor.getGraph().nodes.length, 3);
     const spots = editor.getGraph().nodes.map(n => `${n.x},${n.y}`);
     assert.equal(new Set(spots).size, 3, 'successive nodes are offset so they do not stack');
   });
+
 });
 
 describe('adding edges', () => {
@@ -178,13 +177,10 @@ describe('adding edges', () => {
     assert.equal(editor.getGraph().edges.length, 2);
   });
 
-  it('says why in the hint bar, and then puts the usual hint back', () => {
+  it('says why through onNotice', () => {
     editor.addEdge('a', 'out', 'b', 'in');
     editor.addEdge('b', 'out', 'a', 'in');
-    const hint = env.container.querySelector('.dag-hint');
-    assert.match(hint.textContent, /cycle/);
-    env.runTimeouts();
-    assert.doesNotMatch(hint.textContent, /cycle/);
+    assert.match(env.notices.at(-1), /cycle/);
   });
 
   it('fires no event for a refused edge', () => {
@@ -254,7 +250,7 @@ describe('deleting', () => {
     assert.equal(editor.getGraph().edges.length, 2);
   });
 
-  it('Delete and Backspace remove the selection, and the toolbar button does too', () => {
+  it('Delete and Backspace remove the selection, and deleteSelected does too', () => {
     editor._setSelected('node', 'c');
     env.key('Delete');
     assert.ok(!editor.getGraph().nodes.some(n => n.id === 'c'));
@@ -263,7 +259,7 @@ describe('deleting', () => {
     assert.ok(!editor.getGraph().nodes.some(n => n.id === 'a'));
     editor.loadGraph(graph([['x', 'X', 0, 0]]));
     editor._setSelected('node', 'x');
-    env.container.querySelector('[data-action="del-selected"]').click();
+    editor.deleteSelected();
     assert.equal(editor.getGraph().nodes.length, 0);
   });
 
@@ -303,7 +299,7 @@ describe('selection', () => {
   it('selecting an edge deselects the node; Escape clears the selection', () => {
     editor._setSelected('node', 'a');
     editor._setSelected('edge', 'e1');
-    same(types(env.events), ['selected', 'deselected']);
+    same(types(env.events), ['selected', 'deselected', 'selected']);
     editor._setSelected('node', 'b');
     env.key('Escape');
     assert.equal(editor._selected, null);

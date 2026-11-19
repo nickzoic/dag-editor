@@ -74,7 +74,7 @@ function createEnv({ width = 800, height = 500, resizeObserver = true, segmenter
   SCRIPT.runInContext(dom.getInternalVMContext());
 
   const env = {
-    dom, win, document: win.document, clock, size, events: [], timeouts,
+    dom, win, document: win.document, clock, size, events: [], timeouts, moves: [], notices: [], layouts: [], pins: [],
     get observer() { return observer; },
     container: win.document.getElementById('c'),
     editor: null,
@@ -110,7 +110,25 @@ function createEnv({ width = 800, height = 500, resizeObserver = true, segmenter
     },
   };
   if (create) {
-    env.editor = new win.DAGEditor(env.container, ev => env.events.push(ev));
+    // A subclass that records the hooks as events: the node / edge events in env.events (with the names the
+    // tests use), and the rest in their own lists.
+    const events = env.events;
+    class Recorder extends win.DAGEditor {
+      onAddNode(node)      { events.push({ type: 'created', node }); }
+      onDeleteNode(node)   { events.push({ type: 'deleted', node }); }
+      onSelectNode(node)   { events.push({ type: 'selected', node }); }
+      onSelectEdge(edge)   { events.push({ type: 'selected', edge }); }
+      onDeselectNode(node) { events.push({ type: 'deselected', node }); }
+      onDeselectEdge(edge) { events.push({ type: 'deselected', edge }); }
+      onUpdateNode(node)   { events.push({ type: 'updated', node }); }
+      onAddEdge(edge)      { events.push({ type: 'edge-created', edge }); }
+      onDeleteEdge(edge)   { events.push({ type: 'edge-deleted', edge }); }
+      onMoveNode(node)     { env.moves.push(node); }
+      onNotice(message)    { env.notices.push(message); }
+      onLayoutChange(active) { env.layouts.push(active); }
+      onPinChange(pinned)  { env.pins.push(pinned); }
+    }
+    env.editor = new Recorder(env.container);
   }
   return env;
 }

@@ -137,7 +137,7 @@ for (const [name, w, h] of [['landscape', 800, 500], ['portrait (flipped)', 400,
       env.events.length = 0;
       env.drag(env.portAt('b', 'out', 'out'), env.portAt('a', 'in', 'in'));
       assert.equal(editor.getGraph().edges.length, 1);
-      assert.match(env.container.querySelector('.dag-hint').textContent, /cycle/);
+      assert.match(env.notices.at(-1), /cycle/);
     });
 
     it('moving the pointer out of the editor abandons an edge being drawn, or a node being dragged', () => {
@@ -233,13 +233,13 @@ describe('view: zoom, pan and fit', () => {
   it('Fit scales and centres the whole graph in the view, whatever you have done to it', () => {
     const fitted = [editor._scale, editor._viewX, editor._viewY];
     for (let i = 0; i < 5; i++) wheel(-100);
-    env.container.querySelector('[data-action="fit"]').click();
+    editor.fitView();
     near(editor._scale, fitted[0], 1e-9); near(editor._viewX, fitted[1], 1e-6); near(editor._viewY, fitted[2], 1e-6);
   });
 
   it('Fit on an empty graph does nothing', () => {
     editor.loadGraph({ version: 2, nodes: [], edges: [] });
-    assert.doesNotThrow(() => env.container.querySelector('[data-action="fit"]').click());
+    assert.doesNotThrow(() => editor.fitView());
   });
 
   it('fits a single node, scaling no larger than 2×', () => {
@@ -264,8 +264,4 @@ describe('keyboard', () => {
     assert.equal(env.document.activeElement, env.container);
   });
 
-  it('a toolbar button gives the container focus back', () => {
-    env.container.querySelector('[data-action="add-node"]').click();
-    assert.equal(env.document.activeElement, env.container);
-  });
 });

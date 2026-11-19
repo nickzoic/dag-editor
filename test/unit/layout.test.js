@@ -141,8 +141,8 @@ describe('where auto-layout puts things', () => {
 });
 
 describe('running auto-layout', () => {
-  let env, editor, btn;
-  beforeEach(() => { env = createEnv(); editor = env.editor; editor.loadGraph(pipeline()); btn = env.container.querySelector('[data-action="layout"]'); });
+  let env, editor;
+  beforeEach(() => { env = createEnv(); editor = env.editor; editor.loadGraph(pipeline()); });
 
   it('animates the nodes to their targets and finishes well inside a second', () => {
     const targets = editor._computeLayoutTargets();
@@ -169,20 +169,20 @@ describe('running auto-layout', () => {
     }
   });
 
-  it('the Layout button and the L key start it, and the button lights up while it runs', () => {
-    btn.click();
+  it('the L key starts it, and the layout hooks report when it starts and finishes', () => {
+    env.key('l');
     assert.equal(editor._layoutActive, true);
-    assert.ok(btn.classList.contains('dag-btn-layout--on'));
+    assert.deepEqual(env.layouts, [true]);
     env.settle();
-    assert.ok(!btn.classList.contains('dag-btn-layout--on'));
+    assert.deepEqual(env.layouts, [true, false]);
     editor.getGraph().nodes[0].y += 400;                 // knock a node out of place, so there is something to do
     env.key('l');
     assert.equal(editor._layoutActive, true);
   });
 
-  it('pressing the button again while it runs stops it where it is', () => {
-    btn.click(); env.clock.advance(100);
-    btn.click();
+  it('starting it again while it runs stops it where it is', () => {
+    editor.autoLayout(true); env.clock.advance(100);
+    editor.autoLayout(false);
     assert.equal(editor._layoutActive, false);
     const frozen = JSON.stringify(editor.toJSON());
     env.clock.advance(500);
@@ -221,30 +221,29 @@ describe('running auto-layout', () => {
 });
 
 describe('pinned auto-layout', () => {
-  let env, editor, btn, dbl;
+  let env, editor;
+  const dbl = () => editor.setLayoutPinned(!editor.layoutPinned);
   beforeEach(() => {
     env = createEnv(); editor = env.editor; editor.loadGraph(pipeline());
-    btn = env.container.querySelector('[data-action="layout"]');
-    dbl = () => btn.dispatchEvent(new env.win.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
   });
 
   it('a double-click pins it: it lights up, lays out at once, and stays pinned when done', () => {
     dbl();
     assert.equal(editor._layoutPinned, true);
     assert.equal(editor._layoutActive, true);
-    assert.ok(btn.classList.contains('dag-btn-layout--pinned'));
+    assert.equal(editor.layoutPinned, true);
     env.settle();
     assert.equal(editor._layoutActive, false);
-    assert.ok(btn.classList.contains('dag-btn-layout--pinned'));
-    assert.match(btn.title, /pinned/);
+    assert.equal(editor.layoutPinned, true);
+    assert.deepEqual(env.pins, [true]);
   });
 
   it('a second double-click unpins it, and stops a run in progress', () => {
     dbl(); env.clock.advance(50); dbl();
     assert.equal(editor._layoutPinned, false);
     assert.equal(editor._layoutActive, false);
-    assert.ok(!btn.classList.contains('dag-btn-layout--pinned'));
-    assert.match(btn.title, /pin/);
+    assert.equal(editor.layoutPinned, false);
+    assert.deepEqual(env.pins, [true, false]);
   });
 
   it('Shift+L toggles it from the keyboard', () => {

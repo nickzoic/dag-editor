@@ -3,256 +3,220 @@
  * Include this alongside dag-editor.js:
  *   <link rel="stylesheet" href="dag-editor.css">
  *   <script src="dag-editor.js"></script>
+ *
+ * Colours follow the browser's light or dark setting (prefers-color-scheme). Every colour is a token on
+ * .dag-editor, so a host page can restyle the editor by overriding the tokens on its own container.
+ * Nodes and edges share three colours: a default, a hovered and a selected one.
  */
 
-:root {
-  --dag-bg:         #0f1117;
-  --dag-toolbar-bg: #181c27;
-  --dag-node-fill:  #1e2538;
-  --dag-node-stroke:#3a4466;
-  --dag-node-sel:   #4a7cff;
-  --dag-node-text:  #c8d0f0;
-  --dag-edge:       #3a4466;
-  --dag-accent:     #4a7cff;
-  --dag-draft:      #ff9f4a;
-  --dag-port:       #4a7cff;
-  --dag-hint:       #4a5580;
-  --dag-btn-bg:     #252c42;
-  --dag-btn-hover:  #2f3853;
-  --dag-btn-text:   #8899cc;
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+
+.dag-editor {
+  /* canvas */
+  --dag-bg:            #f5f6fa;
+  --dag-dots:          #d6dbea;
+  /* nodes and edges: default / hovered / selected */
+  --dag-stroke:        #8d97bb;   /* default node outline and edge */
+  --dag-hover:         #3d63d6;   /* hovered node outline and edge */
+  --dag-selected:      #0c9c84;   /* selected node outline, edge and ports */
+  /* node bodies */
+  --dag-node-fill:     #ffffff;
+  --dag-node-text:     #1f2745;
+  --dag-selected-fill: #e2faf4;
+  --dag-selected-text: #04463b;
+  --dag-divider:       #c9cfe3;
+  /* ports */
+  --dag-port-ring:     #aab3d1;
+  --dag-draft:         #e0762a;   /* a line being drawn, and the ports it can connect to */
+  /* glows */
+  --dag-hover-glow:    rgba(61, 99, 214, .28);
+  --dag-selected-glow: rgba(12, 156, 132, .40);
+  --dag-draft-glow:    rgba(224, 118, 42, .70);
 }
 
-.dag-toolbar {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 42px;
-  background: var(--dag-toolbar-bg);
-  border-bottom: 1px solid #232940;
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  gap: 8px;
-  z-index: 10;
-  font-family: system-ui, -apple-system, sans-serif;
+@media (prefers-color-scheme: dark) {
+  .dag-editor {
+    --dag-bg:            #0f1117;
+    --dag-dots:          #232940;
+    --dag-stroke:        #3a4466;
+    --dag-hover:         #6a8aee;
+    --dag-selected:      #2ee8c0;
+    --dag-node-fill:     #1e2538;
+    --dag-node-text:     #c8d0f0;
+    --dag-selected-fill: #0e2a2a;
+    --dag-selected-text: #c0fff2;
+    --dag-divider:       #3a4466;
+    --dag-port-ring:     #2a3458;
+    --dag-draft:         #ff9f4a;
+    --dag-hover-glow:    rgba(106, 138, 238, .25);
+    --dag-selected-glow: rgba(46, 232, 192, .30);
+    --dag-draft-glow:    rgba(255, 159, 74, .70);
+  }
 }
 
-.dag-brand {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .08em;
-  color: var(--dag-node-sel);
-  text-transform: uppercase;
-  margin-right: 8px;
-  opacity: .9;
-}
-
-.dag-toolbar-actions {
-  display: flex;
-  gap: 4px;
-  flex: 1;
-}
-
-.dag-toolbar button {
-  background: var(--dag-btn-bg);
-  color: var(--dag-btn-text);
-  border: 1px solid #2a3150;
-  border-radius: 5px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background .15s, color .15s;
-  font-family: inherit;
-}
-
-.dag-toolbar button:hover {
-  background: var(--dag-btn-hover);
-  color: #c8d0f0;
-}
+/* ── Canvas ─────────────────────────────────────────────────────────────── */
 
 .dag-svg {
   position: absolute;
-  top: 42px; left: 0; right: 0; bottom: 24px;
+  top: 0; left: 0; right: 0; bottom: 0;
   width: 100%;
-  height: calc(100% - 66px);
+  height: 100%;
   background: var(--dag-bg);
-  background-image:
-    radial-gradient(circle, #232940 1px, transparent 1px);
+  background-image: radial-gradient(circle, var(--dag-dots) 1px, transparent 1px);
   background-size: 28px 28px;
   display: block;
   cursor: default;
 }
 
-.dag-hint {
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  height: 24px;
-  line-height: 24px;
-  padding: 0 12px;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 11px;
-  color: var(--dag-hint);
-  background: var(--dag-toolbar-bg);
-  border-top: 1px solid #232940;
-  pointer-events: none;
-}
+/* ── Nodes ──────────────────────────────────────────────────────────────── */
 
-/* Nodes */
 .dag-node-bg {
   fill:         var(--dag-node-fill);
-  stroke:       var(--dag-node-stroke);
+  stroke:       var(--dag-stroke);
   stroke-width: 1.5;
   transition:   fill .15s, stroke .15s, filter .15s;
 }
 
 .dag-node-label {
-  fill:          var(--dag-node-text);
-  font-family:   system-ui, -apple-system, sans-serif;
-  font-size:     13px;
-  font-weight:   600;
+  fill:           var(--dag-node-text);
+  font-family:    system-ui, -apple-system, sans-serif;
+  font-size:      13px;
+  font-weight:    600;
   pointer-events: none;
-  transition:    fill .15s;
+  transition:     fill .15s;
 }
 
 .dag-node-divider {
-  stroke:        var(--dag-node-stroke);
-  stroke-width:  1;
+  stroke:         var(--dag-stroke);
+  stroke-width:   1;
   pointer-events: none;
-  transition:    stroke .15s;
+  transition:     stroke .15s;
 }
 
 .dag-port-label {
-  fill:          var(--dag-node-text);
-  font-family:   system-ui, -apple-system, sans-serif;
-  font-size:     10px;
-  opacity:       0.7;
+  fill:           var(--dag-node-text);
+  font-family:    system-ui, -apple-system, sans-serif;
+  font-size:      10px;
+  opacity:        0.7;
   pointer-events: none;
 }
 
 /* Hover: brighter outline, ports emerge */
 .dag-node:hover .dag-node-bg {
-  stroke: #6a8aee;
-  filter: drop-shadow(0 0 6px rgba(106,138,238,.25));
+  stroke: var(--dag-hover);
+  filter: drop-shadow(0 0 6px var(--dag-hover-glow));
 }
 
 .dag-node:hover .dag-node-divider {
-  stroke: #6a8aee;
+  stroke: var(--dag-hover);
 }
 
-/* Selected node hovered: keep teal border */
-.dag-node--selected:hover .dag-node-bg {
-  fill:   #0e2a2a;
-  stroke: #2ee8c0;
-  filter: drop-shadow(0 0 10px rgba(46,232,192,.40));
-}
-
-/* Selected: distinct teal fill */
+/* Selected: a distinct fill and the selected outline */
 .dag-node--selected .dag-node-bg {
-  fill:         #0e2a2a;
-  stroke:       #2ee8c0;
+  fill:         var(--dag-selected-fill);
+  stroke:       var(--dag-selected);
   stroke-width: 2px;
-  filter:       drop-shadow(0 0 10px rgba(46,232,192,.30));
+  filter:       drop-shadow(0 0 10px var(--dag-selected-glow));
+}
+
+/* Selected and hovered: keep the selected outline */
+.dag-node--selected:hover .dag-node-bg {
+  fill:   var(--dag-selected-fill);
+  stroke: var(--dag-selected);
+  filter: drop-shadow(0 0 10px var(--dag-selected-glow));
 }
 
 .dag-node--selected .dag-node-label {
-  fill: #c0fff2;
+  fill: var(--dag-selected-text);
 }
 
 .dag-node--selected .dag-node-divider {
-  stroke: #2ee8c0;
+  stroke:  var(--dag-selected);
   opacity: 0.4;
 }
 
-/* Ports — always show a dim border; brighten on hover */
+/* ── Ports: a dim ring always; brighter on hover; solid when the dot itself is hovered ── */
+
 .dag-port {
   fill:         var(--dag-node-fill);
-  stroke:       #2a3458;
+  stroke:       var(--dag-port-ring);
   stroke-width: 2;
   transition:   fill .15s, stroke .15s;
   cursor:       crosshair;
 }
 
-/* Brighter ring on node hover */
 .dag-node:hover .dag-port {
-  stroke: var(--dag-port);
+  stroke: var(--dag-hover);
 }
 
-/* Fill port solid when hovering the port dot itself */
 .dag-node:hover .dag-port:hover {
-  fill:   var(--dag-port);
-  stroke: var(--dag-port);
+  fill:   var(--dag-hover);
+  stroke: var(--dag-hover);
 }
 
-/* Selected node: ports match the teal border */
 .dag-node--selected .dag-port {
-  stroke: #2ee8c0;
+  stroke: var(--dag-selected);
 }
 
 .dag-node--selected .dag-port:hover {
-  fill:   #2ee8c0;
-  stroke: #2ee8c0;
+  fill:   var(--dag-selected);
+  stroke: var(--dag-selected);
 }
 
-/* Drop-target highlight: port that a draft edge can connect to */
+/* A port that a line being drawn can connect to */
 .dag-port--target {
   fill:   var(--dag-draft) !important;
   stroke: var(--dag-draft) !important;
-  filter: drop-shadow(0 0 6px rgba(255,159,74,.7));
+  filter: drop-shadow(0 0 6px var(--dag-draft-glow));
 }
 
-/* Edges */
+/* ── Edges: the same three colours as nodes ─────────────────────────────── */
+
 .dag-edge {
-  stroke: var(--dag-edge);
+  stroke:       var(--dag-stroke);
   stroke-width: 2;
-  cursor: pointer;
-  transition: stroke .12s;
+  cursor:       pointer;
+  transition:   stroke .12s;
 }
 
 .dag-edge:hover {
-  stroke: #5a6a99;
-}
-
-.dag-edge--selected:hover {
-  stroke: #2ee8c0;
-  filter: drop-shadow(0 0 8px rgba(46,232,192,.65));
+  stroke: var(--dag-hover);
+  filter: drop-shadow(0 0 6px var(--dag-hover-glow));
 }
 
 .dag-edge--selected {
-  stroke: #2ee8c0;
+  stroke:       var(--dag-selected);
   stroke-width: 2.5;
-  filter: drop-shadow(0 0 6px rgba(46,232,192,.5));
+  filter:       drop-shadow(0 0 6px var(--dag-selected-glow));
+}
+
+.dag-edge--selected:hover {
+  stroke: var(--dag-selected);
+  filter: drop-shadow(0 0 8px var(--dag-selected-glow));
+}
+
+/* Arrowheads take the colour of the edge they end: the default marker follows the stroke, where the
+ * browser supports context-stroke; the selected marker is teal, and the draft one is the draft colour. */
+.dag-arrow-head {
+  fill: var(--dag-stroke);
+  fill: context-stroke;
+}
+
+.dag-arrow-head--selected {
+  fill: var(--dag-selected);
+}
+
+.dag-arrow-head--draft {
+  fill: var(--dag-draft);
 }
 
 .dag-edge-draft {
-  stroke: var(--dag-draft);
-  stroke-width: 2;
+  stroke:          var(--dag-draft);
+  stroke-width:    2;
   stroke-dasharray: 6 4;
-  pointer-events: none;
-  marker-end: url(#dag-arrow-draft);
+  pointer-events:  none;
+  marker-end:      url(#dag-arrow-draft);
 }
 
-/* Layout button: one-shot active */
-.dag-btn-layout--on {
-  background: #1a3060 !important;
-  color: #7aadff !important;
-  border-color: #4a7cff !important;
-  box-shadow: 0 0 8px rgba(74,124,255,.3);
-  animation: dag-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes dag-pulse {
-  0%, 100% { box-shadow: 0 0 6px rgba(74,124,255,.3); }
-  50%       { box-shadow: 0 0 14px rgba(74,124,255,.6); }
-}
-
-/* Layout button: pinned mode (double-click) — teal to distinguish from one-shot */
-.dag-btn-layout--pinned {
-  background: #0e2a2a !important;
-  color: #2ee8c0 !important;
-  border-color: #2ee8c0 !important;
-  animation: dag-pulse-pinned 1.8s ease-in-out infinite;
-}
-
-@keyframes dag-pulse-pinned {
-  0%, 100% { box-shadow: 0 0 6px rgba(46,232,192,.3); }
-  50%       { box-shadow: 0 0 16px rgba(46,232,192,.65); }
-}
+/* The editor draws its own selection, so the browser's focus ring is not wanted round the canvas. */
+.dag-editor:focus, .dag-editor:focus-visible, .dag-svg:focus, .dag-svg:focus-visible { outline: none; }

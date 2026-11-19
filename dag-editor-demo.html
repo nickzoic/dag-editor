@@ -9,6 +9,24 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 [hidden] { display: none !important; }
 
+/* Page colours: light or dark, following the browser (the editor's own colours are in dag-editor.css). */
+:root {
+  --p-bg: #eef0f6; --p-panel: #ffffff; --p-line: #dde2ef;
+  --p-title: #141a33; --p-text: #1f2745; --p-muted: #6b7499; --p-faint: #a3acc8;
+  --p-field: #f6f7fb; --p-field-line: #cdd4e6;
+  --p-btn: #f1f3f9; --p-btn-line: #c9d0e4; --p-btn-text: #3a4a80; --p-btn-hover: #e4e9f5;
+  --p-accent: #3d63d6; --p-code: #0b7a62; --p-warn: #b8601a; --p-danger: #c0392b; --p-ok: #1e8f4e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --p-bg: #080b12; --p-panel: #0d1120; --p-line: #1e2538;
+    --p-title: #e8ecff; --p-text: #c8d0f0; --p-muted: #4a5580; --p-faint: #2a3458;
+    --p-field: #0a0d18; --p-field-line: #2a3150;
+    --p-btn: #1e2538; --p-btn-line: #3a4466; --p-btn-text: #8899cc; --p-btn-hover: #252c42;
+    --p-accent: #4a7cff; --p-code: #7fffc4; --p-warn: #e09040; --p-danger: #ff9090; --p-ok: #7fffc4;
+  }
+}
+
 /* ── Page: header / workspace / footer fill the full viewport height ── */
 html, body { height: 100%; }
 body {
@@ -16,23 +34,38 @@ body {
   height: 100vh; height: 100dvh;
   overflow: hidden;
   font-family: system-ui, -apple-system, sans-serif;
-  background: #080b12; color: #c8d0f0;
+  background: var(--p-bg); color: var(--p-text);
 }
-header { flex: none; padding: 14px 20px; background: #0d1120; border-bottom: 1px solid #1e2538; display: flex; align-items: baseline; gap: 16px; }
-header h1 { font-size: 15px; font-weight: 600; color: #e8ecff; letter-spacing: .02em; }
-header p  { font-size: 12px; color: #4a5580; }
-footer { flex: none; padding: 8px 20px; background: #0d1120; border-top: 1px solid #1e2538; font-size: 11px; color: #2a3458; }
+header { flex: none; padding: 14px 20px; background: var(--p-panel); border-bottom: 1px solid var(--p-line); display: flex; align-items: baseline; gap: 16px; }
+header h1 { font-size: 15px; font-weight: 600; color: var(--p-title); letter-spacing: .02em; }
+header p  { font-size: 12px; color: var(--p-muted); }
+footer { flex: none; padding: 8px 20px; background: var(--p-panel); border-top: 1px solid var(--p-line); font-size: 11px; color: var(--p-faint); }
 
-/* The workspace takes all remaining height. Left column: the graph editor
-   (flexible) stacked above the node editor (fixed height). Right column: sidebar. */
+/* The workspace takes all remaining height. Left column: toolbar, graph editor (flexible), hint, then the
+   node editor (fixed height). Right column: the sidebar. */
 .workspace {
   flex: 1 1 0; min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
-  grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas: "canvas sidebar" "nodepane sidebar";
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "toolbar sidebar" "canvas sidebar" "hint sidebar" "nodepane sidebar";
 }
-#canvas-container { grid-area: canvas; min-width: 0; min-height: 0; }
+#toolbar { grid-area: toolbar; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--p-panel); border-bottom: 1px solid var(--p-line); }
+#toolbar .brand { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--p-accent); text-transform: uppercase; margin-right: 8px; }
+#canvas-container { grid-area: canvas; position: relative; min-width: 0; min-height: 0; }
+#hint { grid-area: hint; padding: 4px 12px; font-size: 11px; color: var(--p-muted); background: var(--p-panel); border-top: 1px solid var(--p-line); line-height: 16px; }
+#hint.warn { color: var(--p-warn); font-weight: 600; }
+
+.tb-btn {
+  font: inherit; font-size: 12px; color: var(--p-btn-text); cursor: pointer;
+  background: var(--p-btn); border: 1px solid var(--p-btn-line); border-radius: 5px; padding: 4px 10px;
+  transition: background .15s, color .15s;
+}
+.tb-btn:hover { background: var(--p-btn-hover); color: var(--p-text); }
+.tb-btn.layout.on     { color: var(--p-accent); border-color: var(--p-accent); animation: pulse 1.4s ease-in-out infinite; }
+.tb-btn.layout.pinned { color: var(--p-code); border-color: var(--p-code); animation: pulse-pinned 1.8s ease-in-out infinite; }
+@keyframes pulse        { 0%, 100% { box-shadow: 0 0 6px rgba(74,124,255,.3); } 50% { box-shadow: 0 0 14px rgba(74,124,255,.6); } }
+@keyframes pulse-pinned { 0%, 100% { box-shadow: 0 0 6px rgba(46,232,192,.3); } 50% { box-shadow: 0 0 16px rgba(46,232,192,.65); } }
 
 /* ── Node editor pane ── */
 #node-pane {
@@ -40,59 +73,62 @@ footer { flex: none; padding: 8px 20px; background: #0d1120; border-top: 1px sol
   height: 232px; min-height: 0;
   display: flex; flex-direction: column;
   padding: 12px 16px;
-  background: #0d1120; border-top: 1px solid #1e2538;
+  background: var(--p-panel); border-top: 1px solid var(--p-line);
 }
-.np-empty { margin: auto; font-size: 12px; color: #4a5580; }
+.np-empty { margin: auto; font-size: 12px; color: var(--p-muted); }
 .np-body  { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .np-head  { flex: none; display: flex; align-items: center; gap: 10px; }
-.np-head label, .np-col-head h3 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: uppercase; letter-spacing: .08em; }
+.np-head label, .np-col-head h3 { font-size: 11px; font-weight: 600; color: var(--p-muted); text-transform: uppercase; letter-spacing: .08em; }
 .np-head input { flex: 0 1 320px; }
-.np-nodeid { font-family: monospace; font-size: 10px; color: #3a4466; }
+.np-nodeid { font-family: monospace; font-size: 10px; color: var(--p-faint); }
 .np-cols  { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .np-col   { min-height: 0; display: flex; flex-direction: column; }
 .np-col-head { flex: none; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .np-ports { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
 .np-port  { display: flex; align-items: center; gap: 8px; }
 .np-port input { flex: 1; min-width: 0; }
-.np-pid   { min-width: 34px; font-family: monospace; font-size: 10px; color: #4a5580; }
-.np-edges { font-size: 10px; color: #e09040; white-space: nowrap; }
-.np-none  { font-size: 11px; font-style: italic; color: #3a4466; }
+.np-pid   { min-width: 34px; font-family: monospace; font-size: 10px; color: var(--p-muted); }
+.np-edges { font-size: 10px; color: var(--p-warn); white-space: nowrap; }
+.np-none  { font-size: 11px; font-style: italic; color: var(--p-faint); }
 
 #node-pane input[type=text] {
-  padding: 5px 8px; font: inherit; font-size: 12px; color: #c8d0f0;
-  background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; outline: none;
+  padding: 5px 8px; font: inherit; font-size: 12px; color: var(--p-text);
+  background: var(--p-field); border: 1px solid var(--p-field-line); border-radius: 5px; outline: none;
 }
-#node-pane input[type=text]:focus { border-color: #4a7cff; }
+#node-pane input[type=text]:focus { border-color: var(--p-accent); }
 .np-add, .np-del {
-  font: inherit; font-size: 11px; color: #8899cc; cursor: pointer;
-  background: #1e2538; border: 1px solid #3a4466; border-radius: 5px; padding: 3px 9px;
+  font: inherit; font-size: 11px; color: var(--p-btn-text); cursor: pointer;
+  background: var(--p-btn); border: 1px solid var(--p-btn-line); border-radius: 5px; padding: 3px 9px;
   transition: background .15s, color .15s;
 }
-.np-add:hover { background: #252c42; color: #c8d0f0; }
+.np-add:hover { background: var(--p-btn-hover); color: var(--p-text); }
 .np-del { padding: 3px 8px; line-height: 1; }
-.np-del:hover { background: #3a1e26; color: #ff9090; border-color: #e74c3c; }
+.np-del:hover { color: var(--p-danger); border-color: var(--p-danger); }
 
 /* ── Sidebar ── */
-aside { grid-area: sidebar; min-height: 0; background: #0d1120; border-left: 1px solid #1e2538; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
-aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: uppercase; letter-spacing: .08em; }
+aside { grid-area: sidebar; min-height: 0; background: var(--p-panel); border-left: 1px solid var(--p-line); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+aside h2 { font-size: 11px; font-weight: 600; color: var(--p-muted); text-transform: uppercase; letter-spacing: .08em; }
 #event-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; min-height: 60px; }
-.log-entry { font-size: 11px; padding: 6px 8px; border-radius: 5px; background: #131929; border-left: 3px solid; line-height: 1.4; animation: fadeIn .2s ease; }
+.log-entry { font-size: 11px; padding: 6px 8px; border-radius: 5px; background: var(--p-field); border-left: 3px solid; line-height: 1.4; color: var(--p-text); animation: fadeIn .2s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
-.log-entry.created       { border-color: #2ecc71; color: #7fffc4; }
-.log-entry.selected      { border-color: #4a7cff; color: #a0c0ff; }
-.log-entry.deselected    { border-color: #3a4466; color: #6a7aa8; }
-.log-entry.updated       { border-color: #b08ae8; color: #d4bcff; }
-.log-entry.deleted       { border-color: #e74c3c; color: #ff9090; }
-.log-entry.edge-created  { border-color: #a0e080; color: #c8f0a8; }
-.log-entry.edge-deleted  { border-color: #e09040; color: #f0c888; }
-.log-entry.placeholder   { border-color: #2a3458; color: #4a5580; }
+.log-entry.created         { border-color: #2ecc71; }
+.log-entry.selected        { border-color: var(--p-accent); }
+.log-entry.deselected      { border-color: var(--p-faint); }
+.log-entry.edge-selected   { border-color: var(--p-accent); }
+.log-entry.edge-deselected { border-color: var(--p-faint); }
+.log-entry.updated         { border-color: #b08ae8; }
+.log-entry.moved           { border-color: #3aa0c8; }
+.log-entry.deleted         { border-color: #e74c3c; }
+.log-entry.edge-created    { border-color: #7cc050; }
+.log-entry.edge-deleted    { border-color: var(--p-warn); }
+.log-entry.placeholder     { border-color: var(--p-line); color: var(--p-muted); }
 .log-label { display: inline-block; font-weight: 700; margin-right: 4px; text-transform: uppercase; font-size: 9px; letter-spacing: .08em; opacity: .8; }
 .log-detail { opacity: .55; font-size: 10px; }
-#shortcuts { font-size: 11px; color: #4a5580; line-height: 2; }
-#shortcuts kbd { background: #1e2538; border: 1px solid #3a4466; border-radius: 3px; padding: 1px 5px; font-size: 10px; color: #8899cc; font-family: inherit; }
-.demo-btn { background: #1e2538; border: 1px solid #3a4466; color: #8899cc; border-radius: 6px; padding: 7px 12px; font-size: 12px; cursor: pointer; transition: background .15s; width: 100%; }
-.demo-btn:hover { background: #252c42; color: #c8d0f0; }
-#json-out { width: 100%; height: 110px; resize: vertical; background: #0a0d18; border: 1px solid #2a3150; border-radius: 5px; color: #7fffc4; font-family: monospace; font-size: 10px; padding: 6px; }
+#shortcuts { font-size: 11px; color: var(--p-muted); line-height: 2; }
+#shortcuts kbd { background: var(--p-btn); border: 1px solid var(--p-btn-line); border-radius: 3px; padding: 1px 5px; font-size: 10px; color: var(--p-btn-text); font-family: inherit; }
+.demo-btn { background: var(--p-btn); border: 1px solid var(--p-btn-line); color: var(--p-btn-text); border-radius: 6px; padding: 7px 12px; font-size: 12px; cursor: pointer; transition: background .15s; width: 100%; }
+.demo-btn:hover { background: var(--p-btn-hover); color: var(--p-text); }
+#json-out { width: 100%; height: 110px; resize: vertical; background: var(--p-field); border: 1px solid var(--p-field-line); border-radius: 5px; color: var(--p-code); font-family: monospace; font-size: 10px; padding: 6px; }
 </style>
 </head>
 <body>
@@ -104,7 +140,19 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
 </header>
 
 <div class="workspace">
+  <div id="toolbar">
+    <span class="brand">DAG Editor</span>
+    <button class="tb-btn" data-action="add-node"    title="New node (N)">+ Node</button>
+    <button class="tb-btn" data-action="del-selected" title="Delete selected (Del)">Delete</button>
+    <button class="tb-btn" data-action="undo"        title="Undo (Ctrl+Z)">↩ Undo</button>
+    <button class="tb-btn" data-action="redo"        title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
+    <button class="tb-btn" data-action="fit"         title="Fit graph to view">Fit</button>
+    <button class="tb-btn layout" data-action="layout" id="layout-btn" title="Toggle auto-layout (L) — double-click to pin (Shift+L)">⟳ Layout</button>
+  </div>
+
   <div id="canvas-container"></div>
+
+  <div id="hint">Click canvas to add a node · Drag a port to draw an edge · Drop on canvas to auto-create a node · Del to delete</div>
 
   <section id="node-pane" aria-label="Node editor">
     <div class="np-empty" id="np-empty">Select a node to edit its label and ports.</div>
@@ -161,6 +209,7 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
     </div>
     <button class="demo-btn" id="sample-btn">Load sample graph</button>
   </aside>
+
 </div>
 
 <footer>dag-editor.js — DAGNode / DAGEdge, multi-port nodes, compact layout, JSON import/export</footer>
@@ -169,17 +218,24 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
 <script>
   const log     = document.getElementById('event-log');
   const jsonOut = document.getElementById('json-out');
+  const hint    = document.getElementById('hint');
+  const layoutBtn = document.getElementById('layout-btn');
+  const canvas  = document.getElementById('canvas-container');
   const MAX_LOG = 40;
+  const HINT_TEXT = hint.textContent;
 
   /* ───────────── event log ───────────── */
   const LOG_LABELS = {
-    created:        '＋ Node created',
-    selected:       '◎ Node selected',
-    deselected:     '○ Node deselected',
-    updated:        '✎ Node updated',
-    deleted:        '✕ Node deleted',
-    'edge-created': '→ Edge created',
-    'edge-deleted': '✕ Edge deleted',
+    created:          '＋ Node created',
+    selected:         '◎ Node selected',
+    deselected:       '○ Node deselected',
+    'edge-selected':   '◇ Edge selected',
+    'edge-deselected': '◇ Edge deselected',
+    updated:          '✎ Node updated',
+    moved:            '↔ Node moved',
+    deleted:          '✕ Node deleted',
+    'edge-created':   '→ Edge created',
+    'edge-deleted':   '✕ Edge deleted',
   };
 
   function addLog(event) {
@@ -212,6 +268,15 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
     ph.className = 'log-entry placeholder';
     ph.textContent = 'Events will appear here';
     log.appendChild(ph);
+  }
+
+  /* A message from the editor replaces the hint for a moment. */
+  let hintTimer = null;
+  function showHint(message) {
+    hint.textContent = message;
+    hint.classList.add('warn');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hint.textContent = HINT_TEXT; hint.classList.remove('warn'); }, 2000);
   }
 
   /* ───────────── node editor pane ───────────── */
@@ -317,23 +382,50 @@ aside h2 { font-size: 11px; font-weight: 600; color: #4a5580; text-transform: up
   document.getElementById('np-add-input').addEventListener('click',  () => addPortAndFocus('input'));
   document.getElementById('np-add-output').addEventListener('click', () => addPortAndFocus('output'));
 
-  /* ───────────── editor ───────────── */
-  function onEditorEvent(event) {
-    addLog(event);
-    switch (event.type) {
-      case 'selected':   showNode(event.node); break;
-      case 'deselected': showNode(null); break;
-      case 'deleted':    if (pane.node && pane.node.id === event.node.id) showNode(null); break;
-      case 'updated':
-      case 'edge-created':
-      case 'edge-deleted': refreshPane(); break;
+  /* ───────────── editor ─  /* ───────────── editor ─────────────
+     The host page's view of the editor: the hooks report what happens, and the page reacts. */
+  class DemoEditor extends DAGEditor {
+    onAddNode(node)       { addLog({ type: 'created', node }); }
+    onDeleteNode(node)    { addLog({ type: 'deleted', node }); if (pane.node && pane.node.id === node.id) showNode(null); }
+    onSelectNode(node)    { addLog({ type: 'selected', node }); showNode(node); }
+    onDeselectNode(node)  { addLog({ type: 'deselected', node }); showNode(null); }
+    onSelectEdge(edge)    { addLog({ type: 'edge-selected', edge }); }
+    onDeselectEdge(edge)  { addLog({ type: 'edge-deselected', edge }); }
+    onUpdateNode(node)    { addLog({ type: 'updated', node }); refreshPane(); }
+    onMoveNode(node)      { addLog({ type: 'moved', node }); }
+    onAddEdge(edge)       { addLog({ type: 'edge-created', edge }); refreshPane(); }
+    onDeleteEdge(edge)    { addLog({ type: 'edge-deleted', edge }); refreshPane(); }
+    onNotice(message)     { showHint(message); }
+    onLayoutChange(active) { layoutBtn.classList.toggle('on', active || editor.layoutPinned); }
+    onPinChange(pinned)   {
+      layoutBtn.classList.toggle('pinned', pinned);
+      layoutBtn.classList.toggle('on', pinned || editor.layoutActive);
+      layoutBtn.title = pinned ? 'Auto-layout pinned — double-click to unpin (Shift+L)'
+                               : 'Toggle auto-layout (L) — double-click to pin (Shift+L)';
     }
   }
 
-  const editor = new DAGEditor(document.getElementById('canvas-container'), onEditorEvent);
+  const editor = new DemoEditor(canvas);
   clearLog();
 
-  /* ───────────── import / export / sample ───────────── */
+  /* ───────────── toolbar ───────────── */
+  document.getElementById('toolbar').addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    switch (btn.dataset.action) {
+      case 'add-node':     editor.addNodeAtCentre(); break;
+      case 'del-selected': editor.deleteSelected(); break;
+      case 'undo':         editor.undo(); break;
+      case 'redo':         editor.redo(); break;
+      case 'fit':          editor.fitView(); break;
+      case 'layout':       editor.autoLayout(!editor.layoutActive); break;
+    }
+    canvas.focus();                                    // so the keyboard shortcuts keep working
+  });
+  // double-click Layout pins it
+  layoutBtn.addEventListener('dblclick', e => { e.preventDefault(); editor.setLayoutPinned(!editor.layoutPinned); });
+
+  /* ───────────── import / export ───────────── */
   document.getElementById('export-btn').addEventListener('click', () => {
     jsonOut.value = editor.exportJSON(2); jsonOut.select();
   });
