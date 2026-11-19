@@ -100,36 +100,58 @@ describe('routes from auto-layout', () => {
   });
 });
 
-describe('routes are dropped per edge, when what they depend on changes', () => {
+/** How many sample points of the edges as they are drawn lie inside a node they do not join. */
+function drawnThroughNodes(editor) {
+  const ctx = editor._routeContext();
+  let hits = 0;
+  for (const e of editor.getGraph().edges) {
+    for (const sg of editor._edgeSegments(e, ctx)) for (let k = 0; k <= 16; k++) {
+      const q = DE._cubicAt(sg, k / 16);
+      for (const { id, b } of ctx.boxes) {
+        if (id === e.fromNodeId || id === e.toNodeId) continue;
+        if (q.x > b.x + 1.5 && q.x < b.x + b.w - 1.5 && q.y > b.y + 1.5 && q.y < b.y + b.h - 1.5) { hits++; break; }
+      }
+    }
+  }
+  return hits;
+}
+
+describe('routes are dropped per edge, when the drawing is affected', () => {
   let env, editor;
   const edge = id => editor.getGraph().edges.find(e => e.id === id);
   const node = id => editor.getGraph().nodes.find(n => n.id === id);
   const routed = id => editor._routeFor(edge(id)) !== null;
   const curves = id => C(env.document.querySelector(`path[data-id="${id}"]`));
+
+  /** Move `label` so that it sits on the lane `id` passes through in its first column (blocking that route). */
+  const blockRoute = (id, label) => {
+    const pt = editor._routeFor(edge(id))[0];
+    const n = node(label), hu = editor._nodeHeight(n);
+    n.x = pt.x - W / 2; n.y = pt.y - hu / 2;
+    editor._render();
+  };
+
   beforeEach(() => { env = laidOut(chain()); editor = env.editor; });
 
-  it('moving a node drops the routes of the edges it joins, and leaves the others exactly as they were drawn', () => {
+  it('a small move of any node keeps every route, and drawings no other node touches are unchanged', () => {
     const bcBefore = env.document.querySelector('path[data-id="bc"]').getAttribute('d');
-    node('a').y += 3; editor._render();                  // a joins ab and ad; cd and bc do not involve it
-    assert.equal(routed('ab'), false);
-    assert.equal(routed('ad'), false);
-    assert.equal(routed('bc'), true, 'bc spans columns 1–2, which a is not in');
-    assert.equal(routed('cd'), true);
-    assert.equal(curves('ad'), 1, 'the dropped route is drawn as a single curve');
-    assert.equal(env.document.querySelector('path[data-id="bc"]').getAttribute('d'), bcBefore, 'bc is drawn just as before');
+    node('a').y += 3; editor._render();
+    for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null, `${e.id} keeps its route`);
+    assert.equal(env.document.querySelector('path[data-id="bc"]').getAttribute('d'), bcBefore);
+    assert.equal(drawnThroughNodes(editor), 0);
   });
 
-  it('moving a node in the middle of an edge\'s span drops that edge too, though the node is not its end', () => {
-    node('b').y += 3; editor._render();                  // b lies in ad's span, and joins ab and bc
-    assert.equal(routed('ad'), false, 'b sits in a lane of ad');
-    assert.equal(routed('cd'), true, 'cd does not cross column 1');
+  it('a node moved onto one route\'s lane drops that route, and no other', () => {
+    blockRoute('ad', 'b');
+    assert.equal(routed('ad'), false, 'b now sits in ad\'s lane');
+    assert.equal(routed('cd'), true, 'cd does not cross b\'s column');
+    assert.equal(curves('ad'), 1, 'the blocked edge is drawn as a single curve');
   });
 
-  it('a node moved into the columns an edge crosses drops that edge', () => {
-    const colW = editor._columnWidth();
-    assert.equal(routed('bc'), true);
-    node('a').x = 2 * colW; editor._render();            // a now sits in column 2, under bc's span
-    assert.equal(routed('bc'), false);
+  it('a node moved away from a curve it was clear of leaves that route as it was', () => {
+    const before = env.document.querySelector('path[data-id="cd"]').getAttribute('d');
+    node('a').y -= 200; editor._render();               // far from cd, which is drawn in the lower columns
+    assert.equal(env.document.querySelector('path[data-id="cd"]').getAttribute('d'), before);
   });
 
   it('a change to the column width drops every route, since the lanes are placed by it', () => {
@@ -139,13 +161,6 @@ describe('routes are dropped per edge, when what they depend on changes', () => 
     for (const e of editor.getGraph().edges) assert.equal(editor._routeFor(e), null);
     editor.setNodeLabel('d', 'D');                       // back to the old width: the routes are valid again
     assert.equal(routed('bc'), true);
-  });
-
-  it('a port change that resizes an endpoint drops its routes', () => {
-    editor.setPortLabel('b', 'input', 'in', 'a much longer port label');
-    assert.equal(routed('bc'), false);
-    assert.equal(routed('ab'), false);
-    assert.equal(routed('cd'), true);
   });
 
   it('a relabel that changes nothing about the geometry keeps every route', () => {
@@ -159,9 +174,14 @@ describe('routes are dropped per edge, when what they depend on changes', () => 
     assert.equal(editor._routeFor(editor.getGraph().edges.at(-1)), null);
   });
 
-  it('undoing a recorded change to the positions brings the routes back', () => {
+  it('a port change that moves an endpoint never leaves an edge drawn through a node', () => {
+    editor.setPortLabel('b', 'input', 'in', 'a much longer port label');
+    assert.equal(drawnThroughNodes(editor), 0);
+  });
+
+  it('undoing a change that blocked a route brings the route back', () => {
     editor._snapshot();                                  // the laid-out state
-    node('b').y += 3;
+    blockRoute('ad', 'b');
     editor._snapshot();
     assert.equal(routed('ad'), false);
     editor.undo();
@@ -170,23 +190,23 @@ describe('routes are dropped per edge, when what they depend on changes', () => 
   });
 
   it('laying out again restores every route', () => {
-    node('b').y += 30;
+    blockRoute('ad', 'b');
     editor.autoLayout(true); env.settle();
     for (const e of editor.getGraph().edges) assert.ok(editor._routeFor(e) !== null);
   });
 
-  it('a layout that is interrupted before it lands leaves the routes of the nodes it moved without a route', () => {
+  it('while a layout is still moving the nodes, nothing is drawn through a node', () => {
     node('a').y += 300;
     editor.autoLayout(true); env.clock.advance(60);
     assert.equal(editor._layoutActive, true);
-    assert.equal(routed('ad'), false);
+    assert.equal(drawnThroughNodes(editor), 0);
     editor.autoLayout(false);
-    assert.equal(routed('ad'), false);
+    assert.equal(drawnThroughNodes(editor), 0);
   });
 
   it('a route that cannot be drawn falls back to the single curve, not a broken path', () => {
     editor._routes.get('ad').points = [{ x: 9999, y: 0 }, { x: 0, y: 0 }];     // runs backwards
-    assert.equal(editor._routeFor(edge('ad')).length, 2);
+    assert.equal(editor._routeFor(edge('ad')), null, 'and no route is reported for it');
     assert.equal(editor._edgeSegments(edge('ad')).length, 1);
   });
 });

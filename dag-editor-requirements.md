@@ -157,11 +157,8 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 ### 5.5 Edge Routes
 
 - A layout records the route of every edge that runs from one column to a later one: the points at the centres of the lanes it reserved in the columns between its ends (in unflipped coordinates). An edge between adjacent columns has no points, and its route is a single rise or fall in the gap between the columns.
-- Each route records what it depends on, and is used only while those things are as the layout left them:
-  - the two nodes it joins, with their sizes and ports;
-  - every other node whose horizontal extent overlaps the columns the route crosses (its span), since such a node could sit in one of the route's lanes, or in a gap it rises through;
-  - the column width, which fixes where the columns are.
-- Changing any of these drops that route, and its edge reverts to a single curve (§2.3) until the next layout. Anything else can change without affecting it: moving a node outside an edge's span leaves that edge's route, and its drawing, exactly as they were. Adding an edge leaves other routes alone, and the new edge has no route until the next layout.
+- A route is used for as long as it is still good. Two things make it good: the columns must still be the width they were laid out at, and the curve as drawn now must pass clear of every node except the two it joins.
+- So a node only affects the edges whose drawn curves it now lies across. A small move keeps every route. A node moved onto a lane drops only the route through that lane. Any edge whose route is no longer clear is drawn as a single curve (§2.3) until the next layout.
 - A change that alters the column width (for example, a node that becomes taller than any other) drops every route, since the lanes are placed by it.
 - A relabel that changes nothing about the geometry keeps every route.
 - Undoing or redoing back to the laid-out state restores the routes, because they depend only on the positions, sizes and ports of nodes and on the edges.
