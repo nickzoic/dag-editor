@@ -258,11 +258,11 @@ describe('undo and redo', () => {
     assert.deepEqual(types(env.events), ['deselected']);
   });
 
-  it('is available from the toolbar and from the keyboard', () => {
+  it('is available from the API and from the keyboard', () => {
     editor.addNode('A', 0, 0); editor.addNode('B', 0, 0); editor.addNode('C', 0, 0); editor.addNode('D', 0, 0);
-    env.container.querySelector('[data-action="undo"]').click();
+    editor.undo();
     assert.equal(editor.getGraph().nodes.length, 3);
-    env.container.querySelector('[data-action="redo"]').click();
+    editor.redo();
     assert.equal(editor.getGraph().nodes.length, 4);
     env.key('z', { ctrlKey: true });                       assert.equal(editor.getGraph().nodes.length, 3);
     env.key('Z', { ctrlKey: true, shiftKey: true });       assert.equal(editor.getGraph().nodes.length, 4);

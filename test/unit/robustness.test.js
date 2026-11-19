@@ -29,12 +29,11 @@ describe('unusual input', () => {
     assert.ok(Number.isFinite(onlyY.x));
   });
 
-  it('clicking on the toolbar itself, away from any button, does nothing', () => {
-    env.container.querySelector('.dag-brand').click();
-    env.container.querySelector('.dag-toolbar').click();
-    env.container.querySelector('.dag-toolbar').dispatchEvent(new env.win.MouseEvent('dblclick', { bubbles: true }));
+  it('an editor with no host page around it has nothing to click but the canvas', () => {
+    env.container.click();
+    env.container.dispatchEvent(new env.win.MouseEvent('dblclick', { bubbles: true }));
     assert.equal(editor.getGraph().nodes.length, 0);
-    assert.equal(editor._layoutPinned, false);
+    assert.equal(editor.layoutPinned, false);
   });
 
   it('Ctrl+Z works with a capital Z too (caps lock)', () => {
