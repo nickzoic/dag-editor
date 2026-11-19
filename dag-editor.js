@@ -122,6 +122,7 @@ class DAGEditor {
     this._lastSnapKey = null;    // lets repeated edits of one field share an undo step
     this._lineCache   = new Map();   // "id|U" / "id|F" → { id, label, maxW, lines }  (wrapped label text)
     this._flipCache   = new Map();   // node id → { sig, g }  (geometry of the node when flipped)
+    this._routes      = new Map();   // edge id → { points, colW }: routes from the last layout (see _drawn)
     this._flipped     = false;       // shown with the axes swapped (container taller than wide)?
     this._resizeObserver = null;
 
@@ -599,8 +600,9 @@ class DAGEditor {
     }
 
     // --- edge click
+    const ctx = this._routeContext();
     for (const edge of this._edges.values()) {
-      if (this._edgeHitTest(edge, gp.x, gp.y)) {
+      if (this._edgeHitTest(edge, gp.x, gp.y, 7, ctx)) {
         this._setSelected('edge', edge.id);
         e.stopPropagation(); return;
       }
@@ -780,8 +782,9 @@ class DAGEditor {
     const gp = this._clientToGraph(e.clientX, e.clientY);
 
     // Edge: insert a new node at the click point and splice it in
+    const ctx = this._routeContext();
     for (const edge of this._edges.values()) {
-      if (!this._edgeHitTest(edge, gp.x, gp.y)) continue;
+      if (!this._edgeHitTest(edge, gp.x, gp.y, 7, ctx)) continue;
 
       const fromNode = this._nodes.get(edge.fromNodeId);
       const toNode   = this._nodes.get(edge.toNodeId);
@@ -834,12 +837,159 @@ class DAGEditor {
   }
 
   /* ─────────────────── edge geometry ─────────────────── */
-  _edgeHitTest(edge, gx, gy, tol = 7) {
+
+  /* Edge routes ─────────────────────────────────────────────────────────────
+   * Auto-layout gives every edge that runs from one column to a later one a route: the points where its
+   * curve passes through the lane the layout reserved for it in each column it crosses. The points are in
+   * model (unflipped) coordinates.
+   *
+   * A route is used for as long as it is still good: its curve, as drawn now, must not pass through any node
+   * other than the two it joins, and the columns must still be the width they were laid out at (see
+   * _drawn). So moving a node only affects the edges whose curves it now lies across. Any other edge
+   * keeps its route, and its drawing, exactly. A route that is no longer clear is drawn as a single curve
+   * (§2.3) until the next layout. Routes are not exported. */
+
+  /* The width of a column: wide enough for a node and its lane, and for the tallest flipped node. Layout
+   * and routing both use it, so that the lanes of a route and the columns of the nodes agree. */
+  _columnWidth() {
+    const flipH = Math.max(0, ...[...this._nodes.values()].map(n => this._flipGeom(n).h));
+    return Math.max(DAGEditor._NODE_W + DAGEditor._LAYOUT_COL_GAP, flipH + DAGEditor._LAYOUT_NODE_GAP);
+  }
+
+  /* What the route checks need, gathered once per drawing pass rather than once per edge: the column width,
+   * and the box each node is drawn in (in the orientation now showing). */
+  _routeContext() {
+    const boxes = [];
+    for (const n of this._nodes.values()) boxes.push({ id: n.id, b: this._boxOf(n) });
+    return { colW: this._columnWidth(), boxes };
+  }
+
+  /* Whether the curve `segs` of `edge` passes clear of every node box other than the edge's own ends. */
+  _clearOf(edge, segs, boxes) {
+    const pts = [];
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const sg of segs) {
+      // sample every ~3 px along the curve, so that a corner of a box cannot slip between two samples
+      const chord = Math.hypot(sg.e.x - sg.s.x, sg.e.y - sg.s.y) + Math.hypot(sg.c1.x - sg.s.x, sg.c1.y - sg.s.y) + Math.hypot(sg.c2.x - sg.c1.x, sg.c2.y - sg.c1.y);
+      const n = Math.min(400, Math.max(8, Math.ceil(chord / 3)));
+      for (let k = 0; k <= n; k++) {
+        const q = DAGEditor._cubicAt(sg, k / n);
+        pts.push(q);
+        x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y);
+      }
+    }
+    for (const { id, b } of boxes) {
+      if (id === edge.fromNodeId || id === edge.toNodeId) continue;
+      if (b.x > x1 + 2 || b.x + b.w < x0 - 2 || b.y > y1 + 2 || b.y + b.h < y0 - 2) continue;   // cannot touch it
+      for (const q of pts) {
+        if (q.x > b.x + 1.5 && q.x < b.x + b.w - 1.5 && q.y > b.y + 1.5 && q.y < b.y + b.h - 1.5) return false;
+      }
+    }
+    return true;
+  }
+
+  /* How an edge is drawn right now, as { segs, lanes } (segs in display coordinates; lanes says whether its
+   * route's lanes are used). In order of preference:
+   *   • a straight line between its ports, for a long edge (one with lanes), if nothing is in its way;
+   *   • its lane route, if the route still exists and its curve is clear of the other nodes;
+   *   • null, meaning a single curve (§2.3).
+   * A route is dropped if the columns have changed width since it was laid out. `ctx` (from _routeContext)
+   * lets a loop over many edges gather things once. */
+  _drawn(edge, ctx) {
+    const r = this._routes.get(edge.id);
+    if (!r || r.colW !== ctx.colW) return null;
     const p1 = this._edgeP1(edge), p2 = this._edgeP2(edge);
-    if (!p1 || !p2) return false;
-    for (let t = 0; t <= 1; t += 0.05) {
-      const b = this._bezierAt(p1, p2, t);
-      if (Math.hypot(gx - b.x, gy - b.y) < tol) return true;
+    if (!p1 || !p2) return null;
+    if (r.points.length) {
+      const straight = this._straightSegments(p1, p2);
+      if (this._clearOf(edge, straight, ctx.boxes)) return { segs: straight, lanes: false };
+    }
+    const lanes = this._routedSegments(p1, p2, r.points);
+    return lanes && this._clearOf(edge, lanes, ctx.boxes) ? { segs: lanes, lanes: true } : null;
+  }
+
+  /* One straight segment from the edge's start surface to its end surface (as a single curve starts and ends). */
+  _straightSegments(p1, p2) {
+    const g = this._edgeGeom(p1, p2);
+    const s = { x: g.sx, y: g.sy }, e = { x: g.ex, y: g.ey };
+    const at = t => ({ x: s.x + (e.x - s.x) * t, y: s.y + (e.y - s.y) * t });
+    return [{ s, c1: at(1 / 3), c2: at(2 / 3), e }];
+  }
+
+  /* 'straight', 'lanes', 'gap' (an edge to the next column, drawn through the gap) or 'curve': how the edge
+   * is drawn right now (see _drawn). */
+  _edgeShape(edge, ctx = this._routeContext()) {
+    const d = this._drawn(edge, ctx);
+    if (!d) return 'curve';
+    if (!d.lanes) return 'straight';
+    return this._routes.get(edge.id).points.length ? 'lanes' : 'gap';
+  }
+
+  /* The route's points (model coordinates) for an edge, if its lanes are being used, else null. */
+  _routeFor(edge, ctx = this._routeContext()) {
+    const d = this._drawn(edge, ctx);
+    return d && d.lanes ? this._routes.get(edge.id).points : null;
+  }
+
+  /* The cubic Bézier segments that draw an edge, in display coordinates: [{ s, c1, c2, e }, …].
+   * A routed edge is one segment per piece of its route, each leaving and arriving horizontally in model
+   * terms, so the curve runs through each lane's centre smoothly. An edge with no usable route is one
+   * segment, the single curve from _edgeGeom. Flipped, every point is transposed, so the flow runs down the
+   * screen. */
+  _edgeSegments(edge, ctx = this._routeContext()) {
+    const drawn = this._drawn(edge, ctx);
+    if (drawn) return drawn.segs;
+    const p1 = this._edgeP1(edge), p2 = this._edgeP2(edge);
+    if (!p1 || !p2) return null;
+    const g = this._edgeGeom(p1, p2);
+    return [{ s: { x: g.sx, y: g.sy }, c1: { x: g.cx1, y: g.cy1 }, c2: { x: g.cx2, y: g.cy2 }, e: { x: g.ex, y: g.ey } }];
+  }
+
+  /* Segments through the route `waypoints` (model coordinates), or null if the route cannot be drawn. */
+  _routedSegments(p1, p2, waypoints) {
+    const PR = DAGEditor._PORT_R + 1;                       // as in _edgeGeomH: the path starts/ends on the port surface
+    const T  = this._flipped ? (p => ({ x: p.y, y: p.x })) : (p => p);   // display ↔ model: transpose, or nothing
+    const m1 = T(p1), m2 = T(p2);
+    const segs = DAGEditor._routeSegments({ x: m1.x + PR, y: m1.y }, { x: m2.x - PR, y: m2.y }, waypoints);
+    return segs && segs.map(sg => ({ s: T(sg.s), c1: T(sg.c1), c2: T(sg.c2), e: T(sg.e) }));
+  }
+
+  /* The curve of a routed edge, in model coordinates, from s to e through the lane centres in
+   * `waypoints` (each at a column's centre). Across each column the curve is flat, at the lane's height,
+   * so it never leaves the lane while it is among that column's nodes; the rise or fall from one lane to
+   * the next happens in the gap between columns, which holds no nodes. Each piece is a cubic with
+   * horizontal handles, so the curve is smooth where it joins. Null if the points do not run left to right. */
+  static _routeSegments(s, e, waypoints) {
+    const half = DAGEditor._NODE_W / 2;
+    const pts = [s];
+    for (const w of waypoints) pts.push({ x: w.x - half, y: w.y }, { x: w.x + half, y: w.y });
+    pts.push(e);
+    for (let i = 1; i < pts.length; i++) if (!(pts[i].x > pts[i - 1].x)) return null;
+    const segs = [];
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1], h = (b.x - a.x) / 2;
+      segs.push({ s: a, c1: { x: a.x + h, y: a.y }, c2: { x: b.x - h, y: b.y }, e: b });
+    }
+    return segs;
+  }
+
+  /* A point on one cubic segment, at parameter t. */
+  static _cubicAt(sg, t) {
+    const m = 1 - t;
+    return {
+      x: m*m*m*sg.s.x + 3*m*m*t*sg.c1.x + 3*m*t*t*sg.c2.x + t*t*t*sg.e.x,
+      y: m*m*m*sg.s.y + 3*m*m*t*sg.c1.y + 3*m*t*t*sg.c2.y + t*t*t*sg.e.y,
+    };
+  }
+
+  _edgeHitTest(edge, gx, gy, tol = 7, ctx = this._routeContext()) {
+    const segs = this._edgeSegments(edge, ctx);
+    if (!segs) return false;
+    for (const sg of segs) {
+      for (let t = 0; t <= 1; t += 0.05) {
+        const b = DAGEditor._cubicAt(sg, t);
+        if (Math.hypot(gx - b.x, gy - b.y) < tol) return true;
+      }
     }
     return false;
   }
@@ -928,11 +1078,11 @@ class DAGEditor {
     };
   }
 
-  _edgePath(edge) {
-    const p1 = this._edgeP1(edge), p2 = this._edgeP2(edge);
-    if (!p1 || !p2) return '';
-    const { sx, sy, cx1, cy1, cx2, cy2, ex, ey } = this._edgeGeom(p1, p2);
-    return `M${sx},${sy} C${cx1},${cy1} ${cx2},${cy2} ${ex},${ey}`;
+  _edgePath(edge, ctx = this._routeContext()) {
+    const segs = this._edgeSegments(edge, ctx);
+    if (!segs) return '';
+    const at = p => `${p.x},${p.y}`;
+    return `M${at(segs[0].s)}` + segs.map(sg => ` C${at(sg.c1)} ${at(sg.c2)} ${at(sg.e)}`).join('');
   }
 
   /* ─────────────────── node / edge operations ─────────────────── */
@@ -1196,6 +1346,7 @@ class DAGEditor {
       if (el === this._draftLine) continue;
       if (!existing.has(el.dataset.id)) el.remove();
     }
+    const ctx = this._routeContext();               // the route checks gather this once, not per edge
     for (const edge of this._edges.values()) {
       const sel = this._selected?.kind === 'edge' && this._selected.id === edge.id;
       let el = this._gEdges.querySelector(`[data-id="${edge.id}"]`);
@@ -1205,7 +1356,7 @@ class DAGEditor {
         el.setAttribute('fill', 'none');
         this._gEdges.appendChild(el);
       }
-      el.setAttribute('d', this._edgePath(edge));
+      el.setAttribute('d', this._edgePath(edge, ctx));
       el.setAttribute('class', sel ? 'dag-edge dag-edge--selected' : 'dag-edge');
       el.setAttribute('marker-end', sel ? 'url(#dag-arrow-sel)' : 'url(#dag-arrow)');
     }
@@ -1433,9 +1584,9 @@ class DAGEditor {
   /* ── Layered layout ──────────────────────────────────────────────────────
    * Works out where every node should end up (the animation then glides there):
    *   1. strata (columns): longest path from a root, roots on the left;
-   *   2. an invisible "dummy" vertex in every column a long edge passes through,
-   *      so the edge gets its own lane between nodes instead of cutting across one
-   *      (the lane is as tall as the curve's sweep across the column);
+   *   2. an invisible "dummy" vertex in every column an edge passes through between its ends,
+   *      so the edge gets its own lane between nodes instead of cutting across one. Each edge's
+   *      dummies, joined up, are its route (see _routeSegments);
    *   3. order within each column by barycentre sweeps, which minimises crossings
    *      (edges are placed by port, so a node's ports are ordered too);
    *   4. vertical placement: each vertex is pulled to line up with the ports it is
@@ -1448,18 +1599,17 @@ class DAGEditor {
   _computeLayoutTargets() {
     const targets = new Map();
     const nodes = [...this._nodes.values()];
+    this._routes = new Map();
     if (!nodes.length) return targets;
 
     const W = DAGEditor._NODE_W, GAP = DAGEditor._LAYOUT_NODE_GAP;
     // The layout is worked out in model (unflipped) coordinates, but the same positions are shown
     // flipped when the container is taller than wide, where a node's width runs along its column
     // and its height across the columns. So leave room for the larger of the two in each direction.
-    const flipH = Math.max(0, ...nodes.map(n => this._flipGeom(n).h));
-    const COL = Math.max(W + DAGEditor._LAYOUT_COL_GAP, flipH + GAP);
-    // A lane is DUMMY_H plus the curve's sweep across its column. The sweep depends on where the edge's
-    // ends are, and the ends move to suit the lanes, so it must be capped or dense graphs feed back on
-    // themselves and the placement runs away.
-    const DUMMY_H = 6, DUMMY_PAD = 8, MAX_SWEEP = 160;
+    const COL = this._columnWidth();
+    // A lane is only as tall as the route it carries: the route runs flat across the column (see
+    // _routeSegments), and only rises or falls in the gap between columns, which holds no nodes.
+    const DUMMY_H = 6, DUMMY_PAD = 8;
     const stratum = this._computeStrata();
     const smooth = t => t * t * (3 - 2 * t);     // the curve's height profile along its run
 
@@ -1467,7 +1617,8 @@ class DAGEditor {
     const layers = [];
     const add = v => { v.ins = []; v.outs = []; (layers[v.layer] = layers[v.layer] || []).push(v); return v; };
     const real = new Map();
-    const longEdges = [];            // edges spanning 2+ columns: the ones that can cut through a node
+    const routedEdges = [];          // every edge running from one column to a later one, with its route
+    const PORT_END = DAGEditor._PORT_R + 1;
     for (const n of nodes) {
       const hu    = this._nodeHeight(n);
       const h     = Math.max(hu, this._flipGeom(n).w);     // room it needs along the column, either way up
@@ -1486,17 +1637,20 @@ class DAGEditor {
       const to = ti < 0 ? v.h / 2 : this._portLocalY(v.node, 'input', ti) + v.shift;
       // horizontal run of the curve, port to port; each dummy sits at its column's centre
       const xs = u.layer * COL + W, run = v.layer * COL - xs;
-      if (v.layer - u.layer > 1) longEdges.push({ u, fo, v, to });
+      const routed = { edge: e, u, fo, v, to, chain: [] };     // route = the dummies in the columns between
+      routedEdges.push(routed);
       // Where the curve is now: ends at the ports as they currently sit. A lane's starting position is
       // the curve's height at its column, so a graph that is already laid out is read back in the
       // order it was laid out in (laying it out again then leaves it alone).
       const y0 = u.node.y + fo - u.shift, y1 = v.node.y + to - v.shift;
       let prev = u, prevOff = fo;
+      const chain = routed.chain;
       for (let l = u.layer + 1; l < v.layer; l++) {
         const f = (l * COL + W / 2 - xs) / run;
         const d = add({ dummy: true, layer: l, h: DUMMY_H, pad: DUMMY_PAD, w: 1, key: y0 + (y1 - y0) * smooth(f),
-                        edge: { u, fo, v, to }, f, half: (W / 2) / run });
+                        edge: { u, fo, v, to }, f });
         segment(prev, prevOff, d, null);
+        chain.push(d);
         prev = d; prevOff = null;
       }
       segment(prev, prevOff, v, to);
@@ -1512,7 +1666,7 @@ class DAGEditor {
     const nSegments = segCount.reduce((n, c) => n + c, 0);
     const nStarts   = nVertices <= 90 ? 12 : nVertices <= 220 ? 4 : 1; // attempts made; the best is kept
     const sweeps    = Math.max(2, Math.min(24, Math.floor(4e6 / (crossCost + 1) / nStarts)));
-    const perTrial  = 10 * (nVertices + nSegments) + crossCost + 300 * longEdges.length;
+    const perTrial  = 10 * (nVertices + nSegments) + crossCost + 300 * routedEdges.length;
     const trials    = Math.min(400, Math.floor(2.5e6 / perTrial / nStarts));
     const everything = layers.flat();
 
@@ -1549,10 +1703,9 @@ class DAGEditor {
     const place = layer => {            // weighted isotonic regression: closest positions that respect the gaps
       const n = layer.length;
       if (!n) return;
-      for (const v of layer) if (v.dummy) {        // lane = where the curve crosses this column, and how far it sweeps
+      for (const v of layer) if (v.dummy) {        // the height the route ideally has in this column
         const { u, fo, v: tv, to } = v.edge;
         const y0 = u.y + fo, dy = tv.y + to - y0;
-        v.h    = DUMMY_H + Math.min(MAX_SWEEP, Math.abs(dy) * (smooth(Math.min(1, v.f + v.half)) - smooth(Math.max(0, v.f - v.half))));
         v.mid  = y0 + dy * smooth(v.f);
       }
       const off = [0];
@@ -1585,28 +1738,29 @@ class DAGEditor {
       }
     };
 
-    // 5. refinement. A long edge is drawn as a curve between its ports, and the lane reserved for it
-    //    can end up on the wrong side of a node (the ordering above ignores node heights), so count
-    //    the edges that really cut through a node and try swapping neighbours to reduce them.
+    // 5. refinement. Routes are drawn from the lanes as they finally sit, and a node can still end up
+    //    where a route runs through it (the ordering above ignores node heights), so count the routes
+    //    that really cut through a node and try swapping neighbours to reduce them.
     const cutThrough = () => {
       let hits = 0;
-      for (const { u, fo, v, to } of longEdges) {
-        const g = this._edgeGeomH({ x: u.layer * COL + W, y: u.y + fo }, { x: v.layer * COL, y: v.y + to });
-        const N = 24, px = new Array(N + 1), py = new Array(N + 1);
+      for (const { u, fo, v, to, chain } of routedEdges) {
+        const segs = DAGEditor._routeSegments(
+          { x: u.layer * COL + W + PORT_END, y: u.y + fo },
+          { x: v.layer * COL - PORT_END,     y: v.y + to },
+          chain.map(d => ({ x: d.layer * COL + W / 2, y: d.y + d.h / 2 })));
+        if (!segs) { hits++; continue; }                                  // cannot be drawn at all
+        const N = 12, pts = [];
         let lo = Infinity, hi = -Infinity;
-        for (let k = 0; k <= N; k++) {
-          const t = k / N, m = 1 - t;
-          px[k] = m*m*m*g.sx + 3*m*m*t*g.cx1 + 3*m*t*t*g.cx2 + t*t*t*g.ex;
-          py[k] = m*m*m*g.sy + 3*m*m*t*g.cy1 + 3*m*t*t*g.cy2 + t*t*t*g.ey;
-          if (py[k] < lo) lo = py[k];
-          if (py[k] > hi) hi = py[k];
+        for (const sg of segs) for (let k = 0; k <= N; k++) {
+          const q = DAGEditor._cubicAt(sg, k / N);
+          pts.push(q); lo = Math.min(lo, q.y); hi = Math.max(hi, q.y);
         }
         for (let l = u.layer + 1; l < v.layer; l++) {
           const x0 = l * COL;
           for (const n of layers[l]) {
-            if (n.dummy || n.y > hi + 2 || n.y + n.h < lo - 2) continue;        // cannot touch it
-            for (let k = 0; k <= N; k++) {
-              if (px[k] > x0 - 2 && px[k] < x0 + W + 2 && py[k] > n.y - 2 && py[k] < n.y + n.h + 2) { hits++; break; }
+            if (n.dummy || n.y > hi + 2 || n.y + n.h < lo - 2) continue;   // cannot touch it
+            for (const q of pts) {
+              if (q.x > x0 - 2 && q.x < x0 + W + 2 && q.y > n.y - 2 && q.y < n.y + n.h + 2) { hits++; break; }
             }
           }
         }
@@ -1717,6 +1871,17 @@ class DAGEditor {
     for (const v of real.values()) minY = Math.min(minY, v.y + v.shift);
     const cents = n => Math.round(n * 100) / 100;                   // 0.01 px: tidy exports, repeatable results
     for (const [id, v] of real) targets.set(id, { x: cents(v.layer * COL), y: cents(v.y + v.shift - minY) });
+
+    // Routes: through the centre of each lane, at each column's centre, in model coordinates. Each is valid for
+    // the arrangement this layout is heading for (see _drawn), so it applies as the nodes land on it.
+    const routes = new Map();
+    for (const { edge, chain } of routedEdges) {
+      routes.set(edge.id, {
+        points: chain.map(d => ({ x: cents(d.layer * COL + W / 2), y: cents(d.y + d.h / 2 - minY) })),
+        colW: COL,
+      });
+    }
+    this._routes = routes;
     return targets;
   }
 

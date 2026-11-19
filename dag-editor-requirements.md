@@ -50,8 +50,9 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 - Edges are drawn as smooth cubic Bézier splines.
 - The spline starts at the surface of the output port dot and ends with an arrowhead whose tip touches the surface of the input port dot (accounting for the port stroke width).
-- When the angle between the two ports is shallow (|Δy| ≤ |Δx|): the spline departs and arrives horizontally. Control handles are horizontal, length ≈ 35% of Δx (minimum 30 px).
+- An edge that is not routed (§5.5) is drawn as one spline. When the angle between the two ports is shallow (|Δy| ≤ |Δx|): the spline departs and arrives horizontally. Control handles are horizontal, length ≈ 35% of Δx (minimum 30 px).
 - When the angle is steep (|Δy| > |Δx|): the spline departs and arrives at 45° to horizontal. The path starts and ends at the port surface measured at 45°, and the control handles extend diagonally at 45°, length ≈ 35% of Δy (minimum 30 px).
+- A **long** edge (one that runs across one or more columns, §5.5) is drawn **straight**, from port to port, whenever nothing is in its way. Only if its straight line would pass through another node is it drawn through the lanes its layout gave it: a chain of splines, flat across each column at that lane's height, rising or falling only in the gap between columns. If the lanes are blocked too, it falls back to a single curve. An edge to the next column is drawn through the gap between the two columns. Arrowheads are on the last piece. Flipped (§13), the same drawing runs down the screen.
 - The arrowhead is backed off by half the port stroke-width so it meets the port edge cleanly.
 - Edges render on top of nodes so they are always visible even if layout forces a node underneath.
 - An unselected edge gets a slightly brighter stroke when hovered.
@@ -149,9 +150,20 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 - The best of several attempts is kept (the current order as it stands, the current order with crossing-reduction sweeps, its reverse, and fixed-seed shuffles), so the result is good whatever the starting arrangement; the current order wins ties, so laying out a layout that is already good leaves it unchanged.
 - Positions are rounded to 0.01 px.
 - Connected ports are lined up horizontally where possible (edges tend toward horizontal), subject to the minimum gap.
-- An edge that spans more than one column should not cut through nodes in the columns it crosses: space is reserved for it between nodes, sized to how far the curve sweeps vertically across that column. Where this cannot be achieved, edges are drawn over nodes so they remain visible (§2.3).
+- Every edge runs from left to right. An edge that spans more than one column is given a lane between the nodes of each column it crosses, and its route passes through those lanes, so it never cuts through a node it does not join (§5.5). Because each route rises or falls only in the gaps between columns, which hold no nodes, this holds in either orientation.
 - The layout is anchored so its topmost node is at y = 0, so repeated layouts do not drift.
 - A graph with no nodes, or a single node, lays out without error.
+
+### 5.5 Edge Routes
+
+- A layout records the route of every edge that runs from one column to a later one: the points at the centres of the lanes it reserved in the columns between its ends (in unflipped coordinates). An edge between adjacent columns has no points, and its route is a single rise or fall in the gap between the columns.
+- Each long edge has a route, made when the layout ran. The route is used only while it is still good: the columns must still be the width they were laid out at, and the curve as drawn now must pass clear of every node except the two it joins. A long edge is drawn straight in preference to its route, whenever the straight line is clear.
+- So a node only affects the edges whose drawn curves it now lies across. A small move keeps every route. A node moved onto a long edge's straight line makes that edge use its lanes; a node moved onto both its straight line and its lanes makes it a single curve (§2.3) until the next layout. Edges whose drawings it does not touch are unchanged.
+- A change that alters the column width (for example, a node that becomes taller than any other) drops every route, since the lanes are placed by it.
+- A relabel that changes nothing about the geometry keeps every route.
+- Undoing or redoing back to the laid-out state restores the routes, because they depend only on the positions, sizes and ports of nodes and on the edges.
+- Routes are not exported. A graph imported from JSON is drawn with single curves until it is laid out.
+- The layout treats routes as it draws them: the search for a good arrangement counts the routes that cut through a node, so the arrangement it keeps is one whose routes are clear.
 
 ### 5.3 Stopping Conditions
 
@@ -280,6 +292,8 @@ All valid node and edge operations fire the appropriate `onChange` events.
   ]
 }
 ```
+
+Edge routes from auto-layout (§5.5) are not part of the export: a graph read back from JSON is drawn with single curves until it is laid out again.
 
 ### 10.2 Version 1 Compatibility
 
