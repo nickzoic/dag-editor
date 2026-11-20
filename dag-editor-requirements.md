@@ -74,7 +74,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 ### 3.1 Adding Nodes
 
-- Clicking on empty canvas creates a new node at the cursor position.
+- Clicking on empty canvas creates a new node at the cursor position, with **no ports**. So does `N` and `addNodeAtCentre()`. The host page adds ports (for example, in `onAddNode`).
 
 ### 3.2 Selecting
 
@@ -90,10 +90,10 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 - Dragging from an **output port** (right side) starts drawing an edge. Dropping on:
   - An input port or node body → connects the edge to that node's (first) input port.
-  - Empty canvas → creates a new node at the drop position and connects to it.
+  - Empty canvas → creates a new node at the drop position, with exactly one input, and connects the dragged edge to that input.
 - Dragging from an **input port** (left side) starts drawing an edge in reverse. Dropping on:
   - An output port or node body → connects the edge from that node's (first) output port.
-  - Empty canvas → creates a new node at the drop position and connects from it.
+  - Empty canvas → creates a new node at the drop position, with exactly one output, and connects the dragged edge from that output.
 - If the connection would violate the validity rules (§1.3), it is rejected.
 
 ### 3.5 Editing Labels and Ports
@@ -102,7 +102,7 @@ A standalone, zero-dependency interactive editor for directed acyclic graphs, im
 
 ### 3.6 Inserting a Node on an Edge
 
-- Double-clicking on an edge inserts a new compact node at the click position, removes the original edge, and wires two new edges through the new node: upstream → new node input, new node output → downstream.
+- Double-clicking on an edge inserts a new compact node at the click position, removes the original edge, and wires two new edges through the new node: upstream → new node input, new node output → downstream. Unlike other new nodes, it gets one input and one output, since it has to join the edge at both ends.
 
 ### 3.7 Deleting
 

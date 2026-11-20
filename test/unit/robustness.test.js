@@ -19,7 +19,7 @@ describe('unusual input', () => {
 
   it('addPort keeps finding a free id however many ports there already are', () => {
     editor.addNode('A', 0, 0);
-    for (let i = 0; i < 4; i++) editor.addPort('n1', 'input');
+    for (let i = 0; i < 5; i++) editor.addPort('n1', 'input');
     same(editor.getGraph().nodes[0].inputs.map(p => p.id), ['in', 'in2', 'in3', 'in4', 'in5']);
   });
 

@@ -715,8 +715,9 @@ class DAGEditor {
           }
         }
         if (!landed) {
-          const nn = this._createNodeAtDisplay(gp.x, gp.y);
-          if (nn.inputs.length) this._tryAddEdge(draft.fromNodeId, draft.fromPortId, nn.id, nn.inputs[0].id);
+          // dragged from an output: the new node gets exactly one input, to take the edge
+          const nn = this._createNodeAtDisplay(gp.x, gp.y, { inputs: [{ id: 'in', label: '' }], outputs: [] });
+          this._tryAddEdge(draft.fromNodeId, draft.fromPortId, nn.id, 'in');
         }
       } else {
         // Input drag → find a compatible output port
@@ -736,8 +737,9 @@ class DAGEditor {
           }
         }
         if (!landed) {
-          const nn = this._createNodeAtDisplay(gp.x, gp.y);
-          if (nn.outputs.length) this._tryAddEdge(nn.id, nn.outputs[0].id, draft.toNodeId, draft.toPortId);
+          // dragged from an input: the new node gets exactly one output, to take the edge
+          const nn = this._createNodeAtDisplay(gp.x, gp.y, { inputs: [], outputs: [{ id: 'out', label: '' }] });
+          this._tryAddEdge(nn.id, 'out', draft.toNodeId, draft.toPortId);
         }
       }
       this._render(); return;
@@ -817,7 +819,8 @@ class DAGEditor {
       const toNode   = this._nodes.get(edge.toNodeId);
       if (!fromNode || !toNode) continue;
 
-      // Create the new node centred on the click, with matching port types
+      // Create the new node centred on the click. Splicing joins the edge at both ends, so it gets one of each,
+      // unlike other new nodes, which have no ports until they are given some.
       const newNode = this._createNodeAtDisplay(gp.x, gp.y, {
         inputs:  [{ id: 'in',  label: '' }],
         outputs: [{ id: 'out', label: '' }],
@@ -1113,11 +1116,9 @@ class DAGEditor {
   _nextNodeId() { return `n${++this._nodeSeq}`; }
   _nextEdgeId() { return `e${++this._edgeSeq}`; }
 
+  /* A new node has no ports unless it is made by dragging from a port (see _createNodeAtDisplay callers). */
   _makeDefaultPorts() {
-    return {
-      inputs:  [{ id: 'in',  label: '' }],
-      outputs: [{ id: 'out', label: '' }],
-    };
+    return { inputs: [], outputs: [] };
   }
 
   _uniqueLabel(base) {

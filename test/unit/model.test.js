@@ -76,10 +76,16 @@ describe('adding nodes', () => {
   let env, editor;
   beforeEach(() => { env = createEnv(); editor = env.editor; });
 
-  it('creates a node with one input and one output port, at the position given', () => {
+  it('creates a node with no ports by default, at the position given', () => {
     const n = editor.addNode('Filter', 40, 50);
     assert.equal(n.label, 'Filter');
     same([n.x, n.y], [40, 50]);
+    same(n.inputs, []);
+    same(n.outputs, []);
+  });
+
+  it('gives a node the ports it is created with', () => {
+    const n = editor.addNode('Filter', 0, 0, { inputs: [port('in')], outputs: [port('out')] });
     same(n.inputs, [{ id: 'in', label: '' }]);
     same(n.outputs, [{ id: 'out', label: '' }]);
   });

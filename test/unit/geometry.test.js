@@ -84,7 +84,7 @@ describe('port positions (unflipped)', () => {
   beforeEach(() => { editor = createEnv().editor; });
 
   it('a lone port on a compact node is at mid-height; inputs on the left edge, outputs on the right', () => {
-    const n = editor.addNode('N', 100, 50);
+    const n = editor.addNode('N', 100, 50, { inputs: [port('in')], outputs: [port('out')] });
     same(editor._inputPortPos(n, 'in'), { x: 100, y: 50 + 23 });
     same(editor._outputPortPos(n, 'out'), { x: 100 + W, y: 50 + 23 });
   });

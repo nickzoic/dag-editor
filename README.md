@@ -42,7 +42,7 @@ Open `dag-editor-demo.html` in a browser (with `dag-editor.js` and `dag-editor.c
 
 ## Nodes and Ports
 
-Each node has zero or more named **input ports** (left side) and zero or more named **output ports** (right side). Ports have an `id` and an optional `label`.
+Each node has zero or more named **input ports** (left side) and zero or more named **output ports** (right side). Ports have an `id` and an optional `label`. A new node has no ports, unless it is created by dragging from a port: then it has exactly one, which takes the dragged edge (an input when dragged from an output, and an output when dragged from an input). Double-clicking an edge splices in a node with one input and one output, since it joins the edge at both ends.
 
 A node renders in a **compact** layout — no header, label centred, ports stacked down the sides — as long as none of its port labels is longer than one user-perceived character. Characters are counted with `Intl.Segmenter`, so `x̅` (an `x` plus a combining overline), an accented letter written with a combining accent, a flag or a ZWJ emoji sequence each count as one. Any number of unlabelled or one-character-labelled ports stays compact. If any port label is longer, the node **expands**: the label gets its own header above a divider, and each port shows its full label inside the body. (The node's own label is not counted; it wraps instead.)
 
@@ -55,7 +55,7 @@ editor.addNode('Transform', 100, 80, {
   outputs: [{ id: 'out',  label: 'result'   }],
 });
 
-// Default: one input port ("in") and one output port ("out")
+// Default: no ports. Add them as needed (for example, in onAddNode)
 editor.addNode('Filter');
 ```
 
